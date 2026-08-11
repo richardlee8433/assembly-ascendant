@@ -3,7 +3,7 @@
 An incremental factory game with automated production, research, and a 2.5D planetary-defense battlefield.
 
 **Release:** v0.1  
-**Play:** https://assembly-ascendant.yiting0630.chatgpt.site
+**Play:** https://assembly-ascendant.netlify.app
 
 ## Features
 
@@ -19,7 +19,7 @@ An incremental factory game with automated production, research, and a 2.5D plan
 
 ## Run locally
 
-The project uses Node.js 22.13+ and a Vinext/Cloudflare toolchain. On Windows, use WSL2.
+The project uses Node.js 22.13+ and standard Next.js.
 
 ```bash
 npm ci
@@ -27,6 +27,12 @@ npm run dev
 ```
 
 Then open the local address shown in the terminal.
+
+## Deploy
+
+The repository includes `netlify.toml`. Netlify builds the project with
+`npm run build` and publishes the standard Next.js `.next` output through the
+Netlify Next.js Runtime.
 
 ## Validation
 
