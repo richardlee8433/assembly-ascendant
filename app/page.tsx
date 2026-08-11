@@ -41,6 +41,18 @@ const cost = (base: number, count: number, curve = 1.18) => Math.ceil(base * Mat
 const RESEARCH_PER_CORE = 4;
 const BASE_MAX_HP = 1000;
 const NEST_MAX_HP = 1000;
+const NEST_SHIELD_WAVES = 3;
+const FIRST_WAVE_DELAY = 45;
+const ASSET = {
+  ironOre: "/assets/iron-ore.webp",
+  ironPlate: "/assets/iron-plate.webp",
+  copperOre: "/assets/copper-ore.webp",
+  copperPlate: "/assets/copper-plate.webp",
+  gear: "/assets/gear.webp",
+  circuit: "/assets/circuit.webp",
+  core: "/assets/core.webp",
+  research: "/assets/research-lab.webp",
+} as const;
 const activeMachines = (s: GameState, key: MachineKey, count: number) => Math.max(0, count - (s.damaged?.[key] || 0));
 
 export default function Home() {
@@ -51,7 +63,7 @@ export default function Home() {
   const [pulse, setPulse] = useState(0);
   const [toast, setToast] = useState("Select a deposit and begin extraction.");
   const [battleUnits, setBattleUnits] = useState<BattleUnit[]>([]);
-  const [waveCountdown, setWaveCountdown] = useState(30);
+  const [waveCountdown, setWaveCountdown] = useState(FIRST_WAVE_DELAY);
   const last = useRef(Date.now());
   const battleUnitsRef = useRef<BattleUnit[]>([]);
   const gRef = useRef(g);
@@ -83,8 +95,8 @@ export default function Home() {
     ironPlate: activeMachines(g, "furnaces", g.furnaces) * 0.6 * mult.smelting,
     copperPlate: activeMachines(g, "copperFurnaces", g.copperFurnaces) * 0.5 * mult.smelting,
     gear: activeMachines(g, "assemblers", g.assemblers) * 0.28 * mult.assembly,
-    circuit: activeMachines(g, "circuitAssemblers", g.circuitAssemblers) * 0.22 * mult.assembly,
-    core: activeMachines(g, "coreAssemblers", g.coreAssemblers) * 0.075 * mult.assembly,
+    circuit: activeMachines(g, "circuitAssemblers", g.circuitAssemblers) * 0.32 * mult.assembly,
+    core: activeMachines(g, "coreAssemblers", g.coreAssemblers) * 0.12 * mult.assembly,
     science: activeMachines(g, "labs", g.labs) * 0.1 * mult.assembly,
   }), [g, mult]);
 
@@ -131,13 +143,13 @@ export default function Home() {
 
         const gearMade = Math.min(ironPlatePool / 2, activeMachines(s, "assemblers", s.assemblers) * 0.28 * assemblyM * dt);
         ironPlatePool -= gearMade * 2;
-        const circuitMade = Math.min(ironPlatePool, copperPlatePool, activeMachines(s, "circuitAssemblers", s.circuitAssemblers) * 0.22 * assemblyM * dt);
+        const circuitMade = Math.min(ironPlatePool, copperPlatePool, activeMachines(s, "circuitAssemblers", s.circuitAssemblers) * 0.32 * assemblyM * dt);
         ironPlatePool -= circuitMade;
         copperPlatePool -= circuitMade;
 
         let gearPool = s.gears + gearMade;
         let circuitPool = s.circuits + circuitMade;
-        const coreMade = Math.min(gearPool / 2, circuitPool / 2, activeMachines(s, "coreAssemblers", s.coreAssemblers) * 0.075 * assemblyM * dt);
+        const coreMade = Math.min(gearPool / 2, circuitPool / 2, activeMachines(s, "coreAssemblers", s.coreAssemblers) * 0.12 * assemblyM * dt);
         gearPool -= coreMade * 2;
         circuitPool -= coreMade * 2;
         const corePool = s.cores + coreMade;
@@ -197,7 +209,10 @@ export default function Home() {
       for (const unit of units) {
         if (unit.hp <= 0) continue;
         if (unit.side === "human" && unit.x >= 92) {
-          if (unit.cooldown <= 0) { nestDamage += unit.attack; unit.cooldown = 0.9; }
+          if (unit.cooldown <= 0) {
+            if (gRef.current.wave >= NEST_SHIELD_WAVES) nestDamage += unit.attack;
+            unit.cooldown = 0.9;
+          }
           continue;
         }
         if (unit.side === "alien" && unit.x <= 7) {
@@ -366,12 +381,12 @@ export default function Home() {
   const reset = () => {
     if (!window.confirm("Reset the factory and erase this local save?")) return;
     setG(initial); localStorage.removeItem("assembly-ascendant-save"); setToast("New landing. Deposits detected.");
-    battleUnitsRef.current = []; setBattleUnits([]); setWaveCountdown(30); setView("factory");
+    battleUnitsRef.current = []; setBattleUnits([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory");
   };
 
   const newExpedition = () => {
     setG(initial); localStorage.removeItem("assembly-ascendant-save"); setToast("New landing. Deposits detected.");
-    battleUnitsRef.current = []; setBattleUnits([]); setWaveCountdown(30); setView("factory"); last.current = Date.now();
+    battleUnitsRef.current = []; setBattleUnits([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory"); last.current = Date.now();
   };
 
   return (
@@ -397,14 +412,14 @@ export default function Home() {
       </nav>
 
       <section className="resource-strip" aria-label="Factory resources">
-        <Resource icon="◆" name="IRON ORE" value={g.ore} flow={flows.ironOre} color="orange" />
-        <Resource icon="▰" name="IRON PLATE" value={g.plates} flow={flows.ironPlate} color="steel" />
-        <Resource icon="◇" name="COPPER ORE" value={g.copperOre} flow={flows.copperOre} color="copper" />
-        <Resource icon="▬" name="COPPER PLATE" value={g.copperPlates} flow={flows.copperPlate} color="copper" />
-        <Resource icon="⚙" name="GEAR" value={g.gears} flow={flows.gear} color="gold" />
-        <Resource icon="▣" name="CIRCUIT" value={g.circuits} flow={flows.circuit} color="green" />
-        <Resource icon="⬡" name="CORE" value={g.cores} flow={flows.core} color="cyan" />
-        <Resource icon="⌬" name="RESEARCH" value={g.science} flow={flows.science} color="violet" />
+        <Resource icon={ASSET.ironOre} name="IRON ORE" value={g.ore} flow={flows.ironOre} color="orange" />
+        <Resource icon={ASSET.ironPlate} name="IRON PLATE" value={g.plates} flow={flows.ironPlate} color="steel" />
+        <Resource icon={ASSET.copperOre} name="COPPER ORE" value={g.copperOre} flow={flows.copperOre} color="copper" />
+        <Resource icon={ASSET.copperPlate} name="COPPER PLATE" value={g.copperPlates} flow={flows.copperPlate} color="copper" />
+        <Resource icon={ASSET.gear} name="GEAR" value={g.gears} flow={flows.gear} color="gold" />
+        <Resource icon={ASSET.circuit} name="CIRCUIT" value={g.circuits} flow={flows.circuit} color="green" />
+        <Resource icon={ASSET.core} name="CORE" value={g.cores} flow={flows.core} color="cyan" />
+        <Resource icon={ASSET.research} name="RESEARCH" value={g.science} flow={flows.science} color="violet" />
       </section>
 
       {view === "factory" ? <>
@@ -440,30 +455,30 @@ export default function Home() {
             <FactoryLane
               label="IRON LINE" color="iron"
               first={<MachineBank icon="⛏" name="DRILL" count={g.drills} damaged={g.damaged.drills} />}
-              firstBelt={<FlowBelt icon="◆" rate={flows.ironOre.consumed} color="iron" />}
+              firstBelt={<FlowBelt icon={ASSET.ironOre} rate={flows.ironOre.consumed} color="iron" />}
               second={<MachineBank icon="♨" name="FURNACE" count={g.furnaces} damaged={g.damaged.furnaces} />}
-              outputBelt={<FlowBelt icon="▰" rate={flows.ironPlate.produced} color="steel" />}
+              outputBelt={<FlowBelt icon={ASSET.ironPlate} rate={flows.ironPlate.produced} color="steel" />}
             />
             <FactoryLane
               label="COPPER LINE" color="copper"
               first={<MachineBank icon="⛏" name="DRILL" count={g.copperDrills} damaged={g.damaged.copperDrills} color="copper" />}
-              firstBelt={<FlowBelt icon="◇" rate={flows.copperOre.consumed} color="copper" />}
+              firstBelt={<FlowBelt icon={ASSET.copperOre} rate={flows.copperOre.consumed} color="copper" />}
               second={<MachineBank icon="♨" name="FURNACE" count={g.copperFurnaces} damaged={g.damaged.copperFurnaces} color="copper" />}
-              outputBelt={<FlowBelt icon="▬" rate={flows.copperPlate.produced} color="copper" />}
+              outputBelt={<FlowBelt icon={ASSET.copperPlate} rate={flows.copperPlate.produced} color="copper" />}
             />
 
             <div className="pipeline-label assembly-label">COMPONENT ASSEMBLY</div>
             <div className="component-lines">
-              <ComponentLine name="GEAR PRESS" recipe="2 IRON PLATE → GEAR" icon="⚙" count={g.assemblers} damaged={g.damaged.assemblers} rate={flows.gear.produced} outputIcon="⚙" color="gold" />
-              <ComponentLine name="CIRCUIT PRINTER" recipe="IRON + COPPER → CIRCUIT" icon="▣" count={g.circuitAssemblers} damaged={g.damaged.circuitAssemblers} rate={flows.circuit.produced} outputIcon="▣" color="green" />
+              <ComponentLine name="GEAR PRESS" recipe="2 IRON PLATE → GEAR" icon={ASSET.gear} count={g.assemblers} damaged={g.damaged.assemblers} rate={flows.gear.produced} outputIcon={ASSET.gear} color="gold" />
+              <ComponentLine name="CIRCUIT PRINTER" recipe="IRON + COPPER → CIRCUIT" icon={ASSET.circuit} count={g.circuitAssemblers} damaged={g.damaged.circuitAssemblers} rate={flows.circuit.produced} outputIcon={ASSET.circuit} color="green" />
             </div>
 
             <div className="pipeline-label assembly-label">ADVANCED AUTOMATION</div>
             <div className="advanced-line">
-              <MachineBank icon="⬡" name="CORE FAB" count={g.coreAssemblers} damaged={g.damaged.coreAssemblers} color="cyan" large />
-              <FlowBelt icon="⬡" rate={flows.core.consumed} color="cyan" long />
+              <MachineBank icon={ASSET.core} name="CORE FAB" count={g.coreAssemblers} damaged={g.damaged.coreAssemblers} color="cyan" large />
+              <FlowBelt icon={ASSET.core} rate={flows.core.consumed} color="cyan" long />
               <div className="telemetry-bank">
-                <MachineBank icon="⌬" name="LAB" count={g.labs} damaged={g.damaged.labs} color="violet" compact />
+                <MachineBank icon={ASSET.research} name="LAB" count={g.labs} damaged={g.damaged.labs} color="violet" compact />
                 <div className="telemetry-readout"><span>RESEARCH TELEMETRY · CORE −{fmt(flows.core.consumed)}/s</span><strong>+{fmt(flows.science.produced)}/s</strong></div>
               </div>
             </div>
@@ -480,9 +495,9 @@ export default function Home() {
           <ShopRow name="Copper Furnace" detail="+0.5 copper plate/s" icon="♨" count={g.copperFurnaces} priceIcon="▰" price={costs.copperFurnace} canBuy={g.plates >= costs.copperFurnace} onBuy={() => spend("plates", costs.copperFurnace, (s) => ({ ...s, copperFurnaces: s.copperFurnaces + 1 }))}/>
           <div className="shop-group">ASSEMBLY</div>
           <ShopRow name="Gear Press" detail="2 iron plate → gear" icon="⚙" count={g.assemblers} priceIcon="▰" price={costs.assembler} canBuy={g.plates >= costs.assembler} onBuy={() => spend("plates", costs.assembler, (s) => ({ ...s, assemblers: s.assemblers + 1 }))}/>
-          <ShopRow name="Circuit Printer" detail="iron + copper → circuit" icon="▣" count={g.circuitAssemblers} priceIcon="⚙" price={costs.circuitAssembler} canBuy={g.gears >= costs.circuitAssembler} onBuy={() => spend("gears", costs.circuitAssembler, (s) => ({ ...s, circuitAssemblers: s.circuitAssemblers + 1 }))}/>
-          <ShopRow name="Research Lab" detail="1 core → 4 research · cap +0.1/s" icon="⌬" count={g.labs} priceIcon="▣" price={costs.lab} canBuy={g.circuits >= costs.lab} onBuy={() => spend("circuits", costs.lab, (s) => ({ ...s, labs: s.labs + 1 }))}/>
-          <ShopRow name="Core Fabricator" detail="2 gear + 2 circuit → core" icon="⬡" count={g.coreAssemblers} priceIcon="▣" price={costs.coreAssembler} canBuy={g.circuits >= costs.coreAssembler} onBuy={() => spend("circuits", costs.coreAssembler, (s) => ({ ...s, coreAssemblers: s.coreAssemblers + 1 }))}/>
+          <ShopRow name="Circuit Printer" detail="iron + copper → circuit · +0.32/s" icon={ASSET.circuit} count={g.circuitAssemblers} priceIcon={ASSET.gear} price={costs.circuitAssembler} canBuy={g.gears >= costs.circuitAssembler} onBuy={() => spend("gears", costs.circuitAssembler, (s) => ({ ...s, circuitAssemblers: s.circuitAssemblers + 1 }))}/>
+          <ShopRow name="Research Lab" detail="1 core → 4 research · cap +0.1/s" icon={ASSET.research} count={g.labs} priceIcon={ASSET.circuit} price={costs.lab} canBuy={g.circuits >= costs.lab} onBuy={() => spend("circuits", costs.lab, (s) => ({ ...s, labs: s.labs + 1 }))}/>
+          <ShopRow name="Core Fabricator" detail="2 gear + 2 circuit → core · +0.12/s" icon={ASSET.core} count={g.coreAssemblers} priceIcon={ASSET.circuit} price={costs.coreAssembler} canBuy={g.circuits >= costs.coreAssembler} onBuy={() => spend("circuits", costs.coreAssembler, (s) => ({ ...s, coreAssemblers: s.coreAssemblers + 1 }))}/>
         </aside>
       </div>
 
@@ -490,17 +505,17 @@ export default function Home() {
         <div className="research-zone">
           <div className="panel-heading"><span>RESEARCH MATRIX</span><small>CHOOSE YOUR SPECIALIZATION</small></div>
           <div className="research-grid">
-            <TechCard icon="⛏" name="Mining Optimizer" level={g.miningTech} detail="Mining +25% / level" cost={costs.miningTech} science={g.science} onClick={() => research("miningTech")}/>
-            <TechCard icon="♨" name="Thermal Tuning" level={g.smeltingTech} detail="Smelting +25% / level" cost={costs.smeltingTech} science={g.science} onClick={() => research("smeltingTech")}/>
-            <TechCard icon="⌘" name="Assembly Logic" level={g.assemblyTech} detail="Assembly +25% / level" cost={costs.assemblyTech} science={g.science} onClick={() => research("assemblyTech")}/>
+            <TechCard icon={ASSET.ironOre} name="Mining Optimizer" level={g.miningTech} detail="Mining +25% / level" cost={costs.miningTech} science={g.science} onClick={() => research("miningTech")}/>
+            <TechCard icon={ASSET.ironPlate} name="Thermal Tuning" level={g.smeltingTech} detail="Smelting +25% / level" cost={costs.smeltingTech} science={g.science} onClick={() => research("smeltingTech")}/>
+            <TechCard icon={ASSET.gear} name="Assembly Logic" level={g.assemblyTech} detail="Assembly +25% / level" cost={costs.assemblyTech} science={g.science} onClick={() => research("assemblyTech")}/>
           </div>
         </div>
         <div className="mission-zone">
           <div className="panel-heading"><span>ORBITAL CORE PROJECT</span><small>{fmt(missionProgress)}% COMPLETE</small></div>
           <div className="mission-reqs">
-            <Requirement icon="⚙" name="GEARS" have={g.gears} need={100}/>
-            <Requirement icon="▣" name="CIRCUITS" have={g.circuits} need={100}/>
-            <Requirement icon="⬡" name="CORES" have={g.cores} need={25}/>
+            <Requirement icon={ASSET.gear} name="GEARS" have={g.gears} need={100}/>
+            <Requirement icon={ASSET.circuit} name="CIRCUITS" have={g.circuits} need={100}/>
+            <Requirement icon={ASSET.core} name="CORES" have={g.cores} need={25}/>
           </div>
           <div className="mission-progress"><i style={{ width: `${missionProgress}%` }}/></div>
           <button className="activate" disabled={!missionReady} onClick={activate}>{missionReady ? "ACTIVATE ORBITAL CORE" : "AWAITING COMPONENTS"}</button>
@@ -534,13 +549,13 @@ function DefenseView({ g, units, countdown, deployRobot, repairBase, repairMachi
       <div className="war-stat base"><small>FACTORY BASE</small><strong>{fmt(g.baseHp)} / {BASE_MAX_HP}</strong><div><i style={{ width: `${g.baseHp / BASE_MAX_HP * 100}%` }}/></div></div>
       <div className="war-stat wave"><small>NEXT ASSAULT</small><strong>{g.defenseWon ? "SECURED" : g.defenseLost ? "OFFLINE" : g.wave === 0 && g.assemblers === 0 ? "DEFENSE STANDBY" : `WAVE ${g.wave + 1} · ${countdown}s`}</strong><span>{g.wave === 0 && g.assemblers === 0 ? "BUILD A GEAR PRESS TO ARM THE PERIMETER" : `${alienCount} HOSTILES ON FIELD`}</span></div>
       <div className="war-stat kills"><small>COMBAT RECORD</small><strong>{g.kills} KILLS</strong><span>{robotCount} ROBOTS ACTIVE</span></div>
-      <div className="war-stat nest"><small>ALIEN NEST</small><strong>{fmt(g.nestHp)} / {NEST_MAX_HP}</strong><div><i style={{ width: `${g.nestHp / NEST_MAX_HP * 100}%` }}/></div></div>
+      <div className="war-stat nest"><small>ALIEN NEST</small><strong>{g.wave < NEST_SHIELD_WAVES ? `SHIELDED · WAVE ${NEST_SHIELD_WAVES}` : `${fmt(g.nestHp)} / ${NEST_MAX_HP}`}</strong><div><i style={{ width: `${g.nestHp / NEST_MAX_HP * 100}%` }}/></div></div>
     </div>
 
     <div className="battlefield" aria-label="Automated defense battlefield">
       <div className="battle-sky"><i/><i/><i/><i/><i/></div>
       <div className="base-structure"><span>A2</span><b>BASE</b></div>
-      <div className="nest-structure"><span>☣</span><b>NEST</b></div>
+      <div className={`nest-structure ${g.wave < NEST_SHIELD_WAVES ? "shielded" : ""}`}><span>☣</span><b>{g.wave < NEST_SHIELD_WAVES ? "SHIELDED" : "NEST"}</b></div>
       <div className="battle-ground"/>
       <div className="frontline-marker"><span>FRONT LINE</span></div>
       {units.map((unit) => <div key={unit.id} className={`battle-unit ${unit.side} ${unit.kind} ${unit.cooldown > 0.48 ? "attacking" : ""}`} style={{ left: `${unit.x}%`, bottom: `${62 + unit.depth * 48}px`, zIndex: 10 + Math.round(unit.depth * 12), transform: `scale(${0.78 + unit.depth * 0.34})` }} title={`${unit.kind} ${Math.ceil(unit.hp)}/${Math.ceil(unit.maxHp)} HP`}>
@@ -583,12 +598,16 @@ function RobotCard({ kind, image, role, stats, costs, disabled, onClick }: { kin
   return <button className="robot-card" disabled={disabled} onClick={onClick}><span className="robot-icon"><img src={image} alt="" draggable={false}/></span><div><small>{role}</small><b>{kind}</b><em>{stats}</em></div><strong>DEPLOY</strong><i>{costs}</i></button>;
 }
 
-function Resource({ icon, name, value, flow, color }: { icon: string; name: string; value: number; flow: { produced: number; consumed: number }; color: string }) {
-  return <div className={`resource ${color}`}><span className="res-icon">{icon}</span><div><small>{name}</small><strong>{fmt(value)}</strong></div><em><span className="flow-in">+{fmt(flow.produced)}</span><span className="flow-out">−{fmt(flow.consumed)}</span><i>/s</i></em></div>;
+function GameIcon({ icon }: { icon: string }) {
+  return icon.startsWith("/") ? <img className="game-icon" src={icon} alt="" draggable={false}/> : <>{icon}</>;
 }
-function Price({ icon, value }: { icon: string; value: number }) { return <span className="price"><i>{icon}</i>{fmt(value)}</span>; }
+
+function Resource({ icon, name, value, flow, color }: { icon: string; name: string; value: number; flow: { produced: number; consumed: number }; color: string }) {
+  return <div className={`resource ${color}`}><span className="res-icon"><GameIcon icon={icon}/></span><div><small>{name}</small><strong>{fmt(value)}</strong></div><em><span className="flow-in">+{fmt(flow.produced)}</span><span className="flow-out">−{fmt(flow.consumed)}</span><i>/s</i></em></div>;
+}
+function Price({ icon, value }: { icon: string; value: number }) { return <span className="price"><i><GameIcon icon={icon}/></i>{fmt(value)}</span>; }
 function ShopRow(p: { name: string; detail: string; icon: string; count: number; priceIcon: string; price: number; canBuy: boolean; onBuy: () => void }) {
-  return <button className="shop-row" disabled={!p.canBuy} onClick={p.onBuy}><span className="shop-icon">{p.icon}</span><span className="shop-copy"><b>{p.name}</b><small>{p.detail}</small></span><span className="owned">×{p.count}</span><Price icon={p.priceIcon} value={p.price}/></button>;
+  return <button className="shop-row" disabled={!p.canBuy} onClick={p.onBuy}><span className="shop-icon"><GameIcon icon={p.icon}/></span><span className="shop-copy"><b>{p.name}</b><small>{p.detail}</small></span><span className="owned">×{p.count}</span><Price icon={p.priceIcon} value={p.price}/></button>;
 }
 function MachineBank({ icon, name, count, damaged = 0, color = "iron", large = false, compact = false }: { icon: string; name: string; count: number; damaged?: number; color?: string; large?: boolean; compact?: boolean }) {
   const active = Math.max(0, count - damaged);
@@ -596,8 +615,8 @@ function MachineBank({ icon, name, count, damaged = 0, color = "iron", large = f
   return <div className={`machine-bank ${color} ${large ? "large" : ""} ${compact ? "compact" : ""} ${active ? "online" : "idle"} ${damaged ? "has-damage" : ""}`}>
     <div className="bank-label"><span>{name}</span><b>×{active}{damaged > 0 && <em> −{damaged} DMG</em>}</b></div>
     <div className="machine-fleet" aria-label={`${active} active ${name}, ${damaged} damaged`}>
-      {count === 0 ? <span className="machine-unit ghost">{icon}</span> : Array.from({ length: visible }).map((_, i) => <span className="machine-unit" key={i} style={{ animationDelay: `${i * -0.13}s` }}>{icon}</span>)}
-      {damaged > 0 && <span className="machine-unit damaged">{icon}</span>}
+      {count === 0 ? <span className="machine-unit ghost"><GameIcon icon={icon}/></span> : Array.from({ length: visible }).map((_, i) => <span className="machine-unit" key={i} style={{ animationDelay: `${i * -0.13}s` }}><GameIcon icon={icon}/></span>)}
+      {damaged > 0 && <span className="machine-unit damaged"><GameIcon icon={icon}/></span>}
       {active > visible && <span className="fleet-overflow">+{active - visible}</span>}
     </div>
   </div>;
@@ -609,7 +628,7 @@ function FlowBelt({ icon, rate, color = "iron", long = false }: { icon: string; 
   return <div className={`flow-belt ${color} ${moving ? "moving" : "stopped"} ${long ? "long" : ""}`}>
     <div className="belt-rail"><i/><i/></div>
     <div className="belt-items">
-      {Array.from({ length: long ? 7 : 5 }).map((_, i) => <span key={i} style={{ animationDuration: `${speed}s`, animationDelay: `${-(speed / (long ? 7 : 5)) * i}s` }}>{icon}</span>)}
+      {Array.from({ length: long ? 7 : 5 }).map((_, i) => <span key={i} style={{ animationDuration: `${speed}s`, animationDelay: `${-(speed / (long ? 7 : 5)) * i}s` }}><GameIcon icon={icon}/></span>)}
     </div>
     <small>{moving ? `${fmt(rate)}/s` : "NO FLOW"}</small>
   </div>;
@@ -624,9 +643,9 @@ function ComponentLine({ name, recipe, icon, count, damaged = 0, rate, outputIco
 }
 function TechCard({ icon, name, level, detail, cost: c, science, onClick }: { icon: string; name: string; level: number; detail: string; cost: number; science: number; onClick: () => void }) {
   const maxed = level >= 5;
-  return <button className="tech-card" disabled={maxed || science < c} onClick={onClick}><span>{icon}</span><div><b>{name}</b><small>{detail}</small><div className="tech-pips">{Array.from({ length: 5 }).map((_, i) => <i className={i < level ? "on" : ""} key={i}/>)}</div></div><Price icon="⌬" value={maxed ? 0 : c}/></button>;
+  return <button className="tech-card" disabled={maxed || science < c} onClick={onClick}><span><GameIcon icon={icon}/></span><div><b>{name}</b><small>{detail}</small><div className="tech-pips">{Array.from({ length: 5 }).map((_, i) => <i className={i < level ? "on" : ""} key={i}/>)}</div></div><Price icon={ASSET.research} value={maxed ? 0 : c}/></button>;
 }
 function Requirement({ icon, name, have, need }: { icon: string; name: string; have: number; need: number }) {
   const done = have >= need;
-  return <div className={`requirement ${done ? "done" : ""}`}><span>{icon}</span><div><small>{name}</small><strong>{fmt(Math.min(have, need))} / {need}</strong></div></div>;
+  return <div className={`requirement ${done ? "done" : ""}`}><span><GameIcon icon={icon}/></span><div><small>{name}</small><strong>{fmt(Math.min(have, need))} / {need}</strong></div></div>;
 }

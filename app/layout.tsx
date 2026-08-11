@@ -14,10 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Assembly Ascendant",
-  description: "A factory-building incremental browser game.",
-  other: {
-    "codex-preview": "development",
-  },
+  description: "An incremental factory and planetary-defense browser game.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
