@@ -105,3 +105,9 @@ footer{height:30px;border-top:1px solid #273437;color:#526166;background:#0a1011
 .nest-structure.shielded:after{content:"";position:absolute;inset:-12px;border:1px solid #62e7ef88;border-radius:50%;box-shadow:0 0 18px #54dce455;animation:nestShield 1.7s ease-in-out infinite}
 .nest-structure.shielded b{color:#72e9ef}.war-stat.nest strong{min-height:14px}
 @keyframes nestShield{50%{transform:scale(1.06);opacity:.45}}
+
+/* Unified Assembly Ascendant brand mark */
+.opening-logo{display:block;width:104px;height:104px;object-fit:contain;margin:0 0 18px -7px;filter:drop-shadow(0 0 18px #54dce42e);user-select:none}.brand-logo{width:48px;height:48px;display:grid;place-items:center;flex:0 0 48px}.brand-logo img{display:block;width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 0 8px #54dce425);user-select:none}@media(max-width:760px){.opening-logo{display:none}}
+
+/* Lift the cinematic background by 20% while preserving the UI contrast. */
+.opening-camera>img{filter:saturate(.82) contrast(1.12) brightness(.864)}

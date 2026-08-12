@@ -747,7 +747,7 @@ export default function Home() {
         <div className="opening-hud opening-hud-top" aria-hidden="true"><span>ORBITAL INSERTION // A2-01</span><span>LINK 98.7%</span></div>
         <div className="opening-hud opening-hud-bottom" aria-hidden="true"><span>KEPLER FRONTIER // UNKNOWN BIOSPHERE</span><span>DESCENT VECTOR LOCKED</span></div>
         <div className="opening-title-card">
-          <div className="opening-mark">A<span>2</span></div>
+          <img className="opening-logo" src="/assets/logo-mark.png" alt="Assembly Ascendant A squared emblem" />
           <small>EXPEDITIONARY WAR PROTOCOL</small>
           <h1>ASSEMBLY<br/><em>ASCENDANT</em></h1>
           <p>BUILD THE MACHINE. SURVIVE THE PLANET.</p>
@@ -790,7 +790,7 @@ export default function Home() {
       </div>}
       {g.won && <div className="victory-banner"><span>ORBITAL CORE ONLINE</span><strong>PLANETARY FACTORY STATUS: AUTONOMOUS</strong><button onClick={() => setG((s) => ({ ...s, won: false }))}>RETURN TO FACTORY</button></div>}
       <header className="topbar">
-        <div className="brand"><span className="brand-mark">A<span>2</span></span><div><strong>ASSEMBLY ASCENDANT</strong><small>EXPEDITIONARY WAR PROTOCOL // v0.1</small></div></div>
+        <div className="brand"><span className="brand-logo" aria-hidden="true"><img src="/assets/logo-mark.png" alt="" /></span><div><strong>ASSEMBLY ASCENDANT</strong><small>EXPEDITIONARY WAR PROTOCOL // v0.1</small></div></div>
         <div className="objective"><span>DEFENSE NETWORK</span><strong>{g.defenseWon ? "PLANET SECURED" : g.defenseLost ? "GAME OVER — FACTORY LOST" : defenseStatus}</strong></div>
         <div className="top-actions">
           <button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="Open audio settings">⚙ SETTINGS</button>
