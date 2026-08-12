@@ -99,6 +99,10 @@ export default function Home() {
   const [audioPrefsLoaded, setAudioPrefsLoaded] = useState(false);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [hasSave, setHasSave] = useState(false);
+  const [expeditionStarted, setExpeditionStarted] = useState(false);
+  const [introReady, setIntroReady] = useState(false);
+  const [introLeaving, setIntroLeaving] = useState(false);
   const last = useRef(Date.now());
   const battleUnitsRef = useRef<BattleUnit[]>([]);
   const gRef = useRef(g);
@@ -118,6 +122,7 @@ export default function Home() {
       if (saved) {
         const parsed = JSON.parse(saved);
         setG({ ...initial, ...parsed, damaged: { ...blankDamage, ...(parsed.damaged || {}) } });
+        setHasSave(true);
       }
     } catch {}
     setLoaded(true);
@@ -125,6 +130,12 @@ export default function Home() {
 
   useEffect(() => { gRef.current = g; }, [g]);
   useEffect(() => { battleUnitsRef.current = battleUnits; }, [battleUnits]);
+
+  useEffect(() => {
+    if (!loaded || expeditionStarted) return;
+    const reveal = window.setTimeout(() => setIntroReady(true), 4200);
+    return () => window.clearTimeout(reveal);
+  }, [loaded, expeditionStarted]);
 
   useEffect(() => {
     const loadAudioPreferences = window.setTimeout(() => {
@@ -322,7 +333,7 @@ export default function Home() {
   }, [g, rates]);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !expeditionStarted) return;
     const id = window.setInterval(() => {
       const now = Date.now();
       const dt = Math.min(1, (now - last.current) / 1000);
@@ -370,16 +381,16 @@ export default function Home() {
       });
     }, 100);
     return () => window.clearInterval(id);
-  }, [loaded]);
+  }, [loaded, expeditionStarted]);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !expeditionStarted) return;
     const id = window.setInterval(() => localStorage.setItem("assembly-ascendant-save", JSON.stringify(g)), 1200);
     return () => window.clearInterval(id);
-  }, [g, loaded]);
+  }, [g, loaded, expeditionStarted]);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !expeditionStarted) return;
     const id = window.setInterval(() => {
       const state = gRef.current;
       if (state.defenseWon || state.defenseLost) return;
@@ -393,10 +404,10 @@ export default function Home() {
       });
     }, 1000);
     return () => window.clearInterval(id);
-  }, [loaded]);
+  }, [loaded, expeditionStarted]);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !expeditionStarted) return;
     const id = window.setInterval(() => {
       const state = gRef.current;
       if (state.defenseWon || state.defenseLost || battleUnitsRef.current.length === 0) return;
@@ -561,7 +572,7 @@ export default function Home() {
       }
     }, 100);
     return () => window.clearInterval(id);
-  }, [loaded]);
+  }, [loaded, expeditionStarted]);
 
   const costs = {
     drill: cost(15, g.drills), furnace: cost(25, g.furnaces), assembler: cost(18, g.assemblers),
@@ -694,9 +705,54 @@ export default function Home() {
     combatSfxLastRef.current = {}; endSfxPlayedRef.current = null; waveActiveRef.current = false;
   };
 
+  const enterExpedition = (startFresh = false) => {
+    if (startFresh && hasSave && !window.confirm("Start a new expedition and erase the current local save?")) return;
+    if (startFresh || !hasSave) {
+      newExpedition();
+      setHasSave(false);
+    }
+    setIntroReady(true);
+    setIntroLeaving(true);
+    last.current = Date.now();
+    window.setTimeout(() => {
+      setExpeditionStarted(true);
+      setIntroLeaving(false);
+    }, 720);
+  };
+
   return (
-    <main className={`game-shell ${g.won ? "victory" : ""}`} onPointerDownCapture={(event) => playInterfaceSound(event.target)}>
+    <main className={`game-shell ${g.won ? "victory" : ""} ${!expeditionStarted ? "intro-active" : ""}`} onPointerDownCapture={(event) => playInterfaceSound(event.target)}>
       <audio ref={musicRef} src="/audio/theme-02-epic-mysterious-v2.wav" preload="metadata" loop />
+      {!expeditionStarted && <section className={`opening-cinematic ${introReady ? "ready" : ""} ${introLeaving ? "leaving" : ""}`} aria-label="Assembly Ascendant opening screen">
+        <div className="opening-camera" aria-hidden="true">
+          <img src="/assets/opening-orbit.png" alt="" fetchPriority="high" />
+          <div className="opening-atmosphere" />
+          <div className="opening-scanlines" />
+          <span className="descent-trace trace-one" />
+          <span className="descent-trace trace-two" />
+        </div>
+        <div className="opening-vignette" aria-hidden="true" />
+        <div className="opening-hud opening-hud-top" aria-hidden="true"><span>ORBITAL INSERTION // A2-01</span><span>LINK 98.7%</span></div>
+        <div className="opening-hud opening-hud-bottom" aria-hidden="true"><span>KEPLER FRONTIER // UNKNOWN BIOSPHERE</span><span>DESCENT VECTOR LOCKED</span></div>
+        <button className="opening-skip" onClick={() => setIntroReady(true)}>SKIP CINEMATIC</button>
+        <div className="opening-title-card">
+          <div className="opening-mark">A<span>2</span></div>
+          <small>EXPEDITIONARY WAR PROTOCOL</small>
+          <h1>ASSEMBLY<br/><em>ASCENDANT</em></h1>
+          <p>BUILD THE MACHINE. SURVIVE THE PLANET.</p>
+          <div className="opening-actions">
+            <button className="opening-primary" onClick={() => enterExpedition(false)}>
+              <span>{hasSave ? "CONTINUE EXPEDITION" : "BEGIN EXPEDITION"}</span>
+              <small>{hasSave ? `RESUME WAVE ${g.wave || 1} // BASE ${Math.ceil(g.baseHp / 10)}%` : "INITIALIZE PLANETFALL SEQUENCE"}</small>
+            </button>
+            <div>
+              {hasSave && <button onClick={() => enterExpedition(true)}>NEW EXPEDITION</button>}
+              <button onClick={() => setSettingsOpen(true)}>AUDIO SETTINGS</button>
+            </div>
+          </div>
+        </div>
+        <div className="opening-threat" aria-hidden="true"><i/><span>HOSTILE SIGNAL<br/><b>DETECTED</b></span></div>
+      </section>}
       {settingsOpen && <div className="settings-backdrop" onPointerDown={() => setSettingsOpen(false)}>
         <section className="audio-settings" role="dialog" aria-modal="true" aria-labelledby="audio-settings-title" onPointerDown={(event) => event.stopPropagation()}>
           <div className="settings-titlebar">
