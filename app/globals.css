@@ -62,6 +62,31 @@ footer{height:30px;border-top:1px solid #273437;color:#526166;background:#0a1011
 @keyframes muzzleFlash{50%{opacity:1;transform:scale(1.9)}}@keyframes shotTrace{0%{opacity:1;transform:scaleX(.08)}100%{opacity:0;transform:scaleX(1.2)}}@keyframes tankRecoil{40%{transform:translate(-5px,9px) scale(1.08)}100%{transform:translateY(9px) scale(1.08)}}@keyframes fighterHover{50%{translate:0 -5px}}@keyframes endScan{to{transform:translateY(12%)}}
 @media(max-width:720px){.battle-unit{width:64px;height:62px;margin-left:-32px}.battle-unit.tank,.battle-unit.fighter,.battle-unit.brute{width:78px;height:70px;margin-left:-39px}.battlefield{height:350px}.end-stats span{min-width:80px;padding:8px}.expedition-end>strong{font-size:24px}}
 
+/* Target-linked combat motion and impact feedback */
+.combat-fx{position:absolute;inset:0;width:100%;height:100%;z-index:9;overflow:visible;pointer-events:none}
+.attack-effect{animation:attackEffectFade .34s ease-out forwards}
+.attack-effect line{fill:none;stroke:#bffbff;stroke-width:.42;stroke-linecap:round;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 2px #56e7f0)}
+.attack-effect.alien line{stroke:#b9ff67;filter:drop-shadow(0 0 2px #70da45)}
+.attack-effect.tank line{stroke:#ffd47a;stroke-width:.72;stroke-dasharray:1.4 1}
+.attack-effect.fighter line{stroke:#ff9c4f;stroke-width:.66;stroke-dasharray:5 1.3}
+.attack-effect.spitter line{stroke:#83f45b;stroke-width:1.05;stroke-dasharray:.7 1.2}
+.attack-effect.brute line,.attack-effect.crawler line{stroke:#d7ff86;stroke-width:.68;stroke-dasharray:1.2 1}
+.impact-ring{fill:none;stroke:#efffff;stroke-width:.42;vector-effect:non-scaling-stroke;transform-box:fill-box;transform-origin:center;animation:impactBloom .3s ease-out forwards}
+.alien .impact-ring{stroke:#c9ff74}.impact-core{fill:#fff;filter:drop-shadow(0 0 2px #fff)}
+.battle-unit.attacking:after{display:none}
+.battle-unit.moving:not(.fighter):before{content:"";position:absolute;left:24%;right:24%;bottom:-2px;height:7px;border-radius:50%;background:radial-gradient(ellipse,#93a49a55,transparent 70%);filter:blur(2px);animation:travelDust .38s ease-out infinite;z-index:0}
+.battle-unit.moving>img{animation:unitTravel .28s ease-in-out infinite alternate}
+.battle-unit.moving.tank>img{animation:tankTravel .34s ease-in-out infinite alternate}
+.battle-unit.hit>img{animation:unitImpact .2s steps(2,end)!important}
+.battle-unit.hit .unit-hp{box-shadow:0 0 6px #ff7058}
+.battle-unit.attacking.tank>img{animation:tankRecoil .25s ease-out!important}
+@keyframes attackEffectFade{0%{opacity:0}12%{opacity:1}68%{opacity:.95}100%{opacity:0}}
+@keyframes impactBloom{0%{opacity:1;transform:scale(.2)}100%{opacity:0;transform:scale(2.8)}}
+@keyframes travelDust{0%{opacity:0;transform:translateX(4px) scale(.5)}45%{opacity:.55}100%{opacity:0;transform:translateX(-7px) scale(1.4)}}
+@keyframes unitTravel{to{translate:0 -2px;filter:drop-shadow(0 8px 6px #000c) brightness(1.04)}}
+@keyframes tankTravel{to{translate:0 -1px;filter:drop-shadow(0 9px 6px #000d) brightness(1.03)}}
+@keyframes unitImpact{0%,100%{translate:0 0;filter:drop-shadow(0 7px 5px #000b)}50%{translate:-3px 1px;filter:brightness(2.2) saturate(.35) drop-shadow(0 0 8px #ff765c)}}
+
 /* Generated hard-surface resource art */
 .game-icon{display:block;width:100%;height:100%;object-fit:contain;pointer-events:none;user-select:none;filter:drop-shadow(0 3px 3px #000a)}
 .res-icon .game-icon{width:40px;height:40px;filter:drop-shadow(0 4px 3px #000c)}

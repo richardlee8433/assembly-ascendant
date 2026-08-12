@@ -18,6 +18,11 @@ type SfxName = "ui" | "mineIron" | "mineCopper" | "purchase" | "reject" | "resea
 type BattleUnit = {
   id: number; side: "human" | "alien"; kind: HumanUnit | AlienUnit;
   x: number; depth: number; hp: number; maxHp: number; attack: number; range: number; speed: number; cooldown: number;
+  targetId?: number; moving: boolean; attackFx: number; hitFx: number;
+};
+type AttackEffect = {
+  id: number; side: "human" | "alien"; kind: HumanUnit | AlienUnit;
+  fromX: number; fromY: number; toX: number; toY: number; life: number;
 };
 type GameState = {
   ore: number; plates: number; gears: number; science: number;
@@ -49,6 +54,7 @@ const RESEARCH_PER_CORE = 4;
 const BASE_MAX_HP = 1000;
 const NEST_MAX_HP = 1000;
 const NEST_SHIELD_WAVES = 3;
+const MAX_ENEMIES_PER_WAVE = 10;
 const FIRST_WAVE_DELAY = 45;
 const WAVE_INTERMISSION = 25;
 const AUDIO_PREFS_KEY = "assembly-ascendant-audio";
@@ -88,6 +94,7 @@ export default function Home() {
   const [pulse, setPulse] = useState(0);
   const [toast, setToast] = useState("Select a deposit and begin extraction.");
   const [battleUnits, setBattleUnits] = useState<BattleUnit[]>([]);
+  const [attackEffects, setAttackEffects] = useState<AttackEffect[]>([]);
   const [waveCountdown, setWaveCountdown] = useState(FIRST_WAVE_DELAY);
   const [audioPrefs, setAudioPrefs] = useState<AudioPreferences>(DEFAULT_AUDIO_PREFS);
   const [audioPrefsLoaded, setAudioPrefsLoaded] = useState(false);
@@ -97,6 +104,7 @@ export default function Home() {
   const battleUnitsRef = useRef<BattleUnit[]>([]);
   const gRef = useRef(g);
   const unitId = useRef(1);
+  const effectId = useRef(1);
   const musicRef = useRef<HTMLAudioElement>(null);
   const audioPrefsRef = useRef(audioPrefs);
   const sfxContextRef = useRef<AudioContext | null>(null);
@@ -395,18 +403,37 @@ export default function Home() {
       if (state.defenseWon || state.defenseLost || battleUnitsRef.current.length === 0) return;
 
       const dt = 0.1;
-      const units = battleUnitsRef.current.map((u) => ({ ...u, cooldown: Math.max(0, u.cooldown - dt) }));
+      const units = battleUnitsRef.current.map((u) => ({
+        ...u,
+        cooldown: Math.max(0, u.cooldown - dt),
+        attackFx: Math.max(0, u.attackFx - 1),
+        hitFx: Math.max(0, u.hitFx - 1),
+        moving: false,
+      }));
       const breached = new Set<number>();
       const attackSounds = new Set<HumanUnit | AlienUnit>();
+      const newEffects: AttackEffect[] = [];
       let baseDamage = 0;
       let nestDamage = 0;
+
+      const visualY = (kind: HumanUnit | AlienUnit, depth: number) => kind === "fighter" ? 58 - depth * 11 : 78 - depth * 11;
+      const fireAt = (unit: BattleUnit, toX: number, toY: number) => {
+        unit.attackFx = 3;
+        newEffects.push({
+          id: effectId.current++, side: unit.side, kind: unit.kind,
+          fromX: unit.x + (unit.side === "human" ? 2.6 : -2.6), fromY: visualY(unit.kind, unit.depth),
+          toX, toY, life: unit.kind === "spitter" || unit.kind === "fighter" ? 4 : 3,
+        });
+      };
 
       for (const unit of units) {
         if (unit.hp <= 0) continue;
         if (unit.side === "human" && unit.x >= 92) {
+          unit.targetId = undefined;
           if (unit.cooldown <= 0) {
             if (gRef.current.wave >= NEST_SHIELD_WAVES) nestDamage += unit.attack;
             attackSounds.add(unit.kind);
+            fireAt(unit, 96, 66);
             unit.cooldown = 0.9;
           }
           continue;
@@ -418,27 +445,61 @@ export default function Home() {
           continue;
         }
 
-        let target: BattleUnit | undefined;
+        let target: BattleUnit | undefined = unit.targetId === undefined ? undefined : units.find((candidate) => candidate.id === unit.targetId && candidate.hp > 0);
         let distance = Infinity;
-        for (const candidate of units) {
-          if (candidate.side === unit.side || candidate.hp <= 0) continue;
-          const d = Math.abs(candidate.x - unit.x);
-          if (d < distance) { distance = d; target = candidate; }
+        if (target) distance = Math.hypot(target.x - unit.x, (target.depth - unit.depth) * 38);
+        if (!target) {
+          for (const candidate of units) {
+            if (candidate.side === unit.side || candidate.hp <= 0) continue;
+            const d = Math.hypot(candidate.x - unit.x, (candidate.depth - unit.depth) * 38);
+            if (d < distance) { distance = d; target = candidate; }
+          }
         }
+        unit.targetId = target?.id;
         if (target && distance <= unit.range) {
           if (unit.cooldown <= 0) {
             target.hp -= unit.attack;
+            target.hitFx = 3;
             attackSounds.add(unit.kind);
+            fireAt(unit, target.x, visualY(target.kind, target.depth));
             if (unit.kind === "tank" || unit.kind === "fighter") {
               const splash = unit.kind === "tank" ? 0.38 : 0.28;
-              for (const nearby of units) if (nearby.side !== unit.side && nearby.id !== target.id && nearby.hp > 0 && Math.abs(nearby.x - target.x) < 3.5) nearby.hp -= unit.attack * splash;
+              for (const nearby of units) {
+                if (nearby.side === unit.side || nearby.id === target.id || nearby.hp <= 0) continue;
+                if (Math.hypot(nearby.x - target.x, (nearby.depth - target.depth) * 38) < 3.5) {
+                  nearby.hp -= unit.attack * splash;
+                  nearby.hitFx = 2;
+                }
+              }
             }
             unit.cooldown = unit.kind === "marine" ? 0.55 : unit.kind === "spitter" ? 1.15 : 0.9;
           }
         } else {
-          unit.x = Math.max(6, Math.min(93, unit.x + (unit.side === "human" ? 1 : -1) * unit.speed * dt));
+          unit.moving = true;
+          if (target && distance < Infinity) {
+            const dx = target.x - unit.x;
+            const dy = (target.depth - unit.depth) * 38;
+            const step = Math.min(unit.speed * dt, Math.max(0, distance - unit.range * 0.82));
+            unit.x += dx / distance * step;
+            unit.depth += dy / distance * step / 38;
+          } else {
+            unit.x += (unit.side === "human" ? 1 : -1) * unit.speed * dt;
+          }
+          unit.x = Math.max(6, Math.min(93, unit.x));
+          unit.depth = Math.max(0.08, Math.min(0.92, unit.depth));
         }
       }
+
+      // Keep nearby allies from occupying the exact same visual lane.
+      for (let i = 0; i < units.length; i++) for (let j = i + 1; j < units.length; j++) {
+        const a = units[i]; const b = units[j];
+        if (a.side !== b.side || Math.abs(a.x - b.x) > 3 || Math.abs(a.depth - b.depth) > 0.075) continue;
+        const nudge = a.depth <= b.depth ? -0.012 : 0.012;
+        a.depth = Math.max(0.08, Math.min(0.92, a.depth + nudge));
+        b.depth = Math.max(0.08, Math.min(0.92, b.depth - nudge));
+      }
+
+      setAttackEffects((current) => [...current.map((effect) => ({ ...effect, life: effect.life - 1 })).filter((effect) => effect.life > 1), ...newEffects]);
 
       const soundNow = performance.now();
       const soundGap: Record<HumanUnit | AlienUnit, number> = { marine: 170, tank: 520, fighter: 420, crawler: 420, spitter: 620, brute: 800 };
@@ -542,7 +603,8 @@ export default function Home() {
     if (state.defenseWon || state.defenseLost) return;
     const wave = state.wave + 1;
     const scale = 1 + (wave - 1) * 0.14;
-    const count = wave <= 3 ? wave + 2 : Math.min(14, 5 + Math.floor((wave - 3) * 1.1));
+    // Keep early waves readable: 2, 3, 4, 5, 6... with a lower late-game cap.
+    const count = Math.min(MAX_ENEMIES_PER_WAVE, 2 + Math.floor(wave * 0.8));
     const enemies: BattleUnit[] = Array.from({ length: count }).map((_, i) => {
       const isBrute = wave >= 3 && i === count - 1 && wave % 2 === 1;
       const isSpitter = !isBrute && wave >= 2 && i % 4 === 3;
@@ -552,7 +614,8 @@ export default function Home() {
         id: unitId.current++, side: "alien", kind,
         x: 90 - (i % 5) * 1.2, depth: 0.12 + ((i * 29) % 75) / 100, hp, maxHp: hp,
         attack: (isBrute ? 30 : isSpitter ? 15 : 18) * scale, range: isSpitter ? 10 : isBrute ? 3.4 : 2.7,
-        speed: isBrute ? 2.25 : isSpitter ? 3.1 : 4.4, cooldown: i * 0.08,
+            speed: isBrute ? 2.25 : isSpitter ? 3.1 : 4.4, cooldown: i * 0.08,
+            moving: true, attackFx: 0, hitFx: 0,
       };
     });
     waveActiveRef.current = true;
@@ -578,7 +641,7 @@ export default function Home() {
       fighter: { hp: 92, attack: 30, range: 18, speed: 8.5 },
     }[kind];
     setG((prev) => ({ ...prev, plates: prev.plates - costMap.plates, gears: prev.gears - costMap.gears, circuits: prev.circuits - costMap.circuits, cores: prev.cores - costMap.cores }));
-    const robot: BattleUnit = { id: unitId.current++, side: "human", kind, x: 9, depth: 0.18 + ((unitId.current * 37) % 68) / 100, hp: stats.hp, maxHp: stats.hp, attack: stats.attack, range: stats.range, speed: stats.speed, cooldown: 0 };
+    const robot: BattleUnit = { id: unitId.current++, side: "human", kind, x: 9, depth: 0.18 + ((unitId.current * 37) % 68) / 100, hp: stats.hp, maxHp: stats.hp, attack: stats.attack, range: stats.range, speed: stats.speed, cooldown: 0, moving: true, attackFx: 0, hitFx: 0 };
     const next = [...battleUnitsRef.current, robot];
     battleUnitsRef.current = next;
     setBattleUnits(next);
@@ -623,13 +686,13 @@ export default function Home() {
   const reset = () => {
     if (!window.confirm("Reset the factory and erase this local save?")) return;
     setG(initial); localStorage.removeItem("assembly-ascendant-save"); setToast("New landing. Deposits detected.");
-    battleUnitsRef.current = []; setBattleUnits([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory");
+    battleUnitsRef.current = []; setBattleUnits([]); setAttackEffects([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory");
     combatSfxLastRef.current = {}; endSfxPlayedRef.current = null; waveActiveRef.current = false;
   };
 
   const newExpedition = () => {
     setG(initial); localStorage.removeItem("assembly-ascendant-save"); setToast("New landing. Deposits detected.");
-    battleUnitsRef.current = []; setBattleUnits([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory"); last.current = Date.now();
+    battleUnitsRef.current = []; setBattleUnits([]); setAttackEffects([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory"); last.current = Date.now();
     combatSfxLastRef.current = {}; endSfxPlayedRef.current = null; waveActiveRef.current = false;
   };
 
@@ -786,14 +849,14 @@ export default function Home() {
           <button className="activate" disabled={!missionReady} onClick={activate}>{missionReady ? "ACTIVATE ORBITAL CORE" : "AWAITING COMPONENTS"}</button>
         </div>
       </section>
-      </> : <DefenseView g={g} units={battleUnits} countdown={waveCountdown} deployRobot={deployRobot} repairBase={repairBase} repairMachine={repairMachine} />}
+      </> : <DefenseView g={g} units={battleUnits} attackEffects={attackEffects} countdown={waveCountdown} deployRobot={deployRobot} repairBase={repairBase} repairMachine={repairMachine} />}
       <footer><span>LOCAL SAVE // LEGACY COMPATIBLE</span><span>{view === "factory" ? "Factory feeds the war. Keep an eye on the next wave." : "Build the army. Break the hive. Do not lose the core."}</span><span>PROTOCOL A2.01</span></footer>
     </main>
   );
 }
 
-function DefenseView({ g, units, countdown, deployRobot, repairBase, repairMachine }: {
-  g: GameState; units: BattleUnit[]; countdown: number;
+function DefenseView({ g, units, attackEffects, countdown, deployRobot, repairBase, repairMachine }: {
+  g: GameState; units: BattleUnit[]; attackEffects: AttackEffect[]; countdown: number;
   deployRobot: (kind: HumanUnit) => void;
   repairBase: () => void; repairMachine: (key: MachineKey) => void;
 }) {
@@ -823,7 +886,14 @@ function DefenseView({ g, units, countdown, deployRobot, repairBase, repairMachi
       <div className={`nest-structure ${g.wave < NEST_SHIELD_WAVES ? "shielded" : ""}`}><span>☣</span><b>{g.wave < NEST_SHIELD_WAVES ? "SHIELDED" : "NEST"}</b></div>
       <div className="battle-ground"/>
       <div className="frontline-marker"><span>FRONT LINE</span></div>
-      {units.map((unit) => <div key={unit.id} className={`battle-unit ${unit.side} ${unit.kind} ${unit.cooldown > 0.48 ? "attacking" : ""}`} style={{ left: `${unit.x}%`, bottom: `${62 + unit.depth * 48}px`, zIndex: 10 + Math.round(unit.depth * 12), transform: `scale(${0.78 + unit.depth * 0.34})` }} title={`${unit.kind} ${Math.ceil(unit.hp)}/${Math.ceil(unit.maxHp)} HP`}>
+      <svg className="combat-fx" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        {attackEffects.map((effect) => <g key={effect.id} className={`attack-effect ${effect.side} ${effect.kind}`}>
+          <line x1={effect.fromX} y1={effect.fromY} x2={effect.toX} y2={effect.toY}/>
+          <circle className="impact-ring" cx={effect.toX} cy={effect.toY} r="1.1"/>
+          <circle className="impact-core" cx={effect.toX} cy={effect.toY} r="0.38"/>
+        </g>)}
+      </svg>
+      {units.map((unit) => <div key={unit.id} className={`battle-unit ${unit.side} ${unit.kind} ${unit.moving ? "moving" : ""} ${unit.attackFx > 0 ? "attacking" : ""} ${unit.hitFx > 0 ? "hit" : ""}`} style={{ left: `${unit.x}%`, bottom: `${62 + unit.depth * 48}px`, zIndex: 10 + Math.round(unit.depth * 12), transform: `scale(${0.78 + unit.depth * 0.34})` }} title={`${unit.kind} ${Math.ceil(unit.hp)}/${Math.ceil(unit.maxHp)} HP`}>
         <div className="unit-hp"><i style={{ width: `${Math.max(0, unit.hp / unit.maxHp * 100)}%` }}/></div>
         <span className="unit-shadow"/>
         <img src={`/units/${unit.kind}.png`} alt="" draggable={false}/>
