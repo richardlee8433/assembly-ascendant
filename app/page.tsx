@@ -58,7 +58,7 @@ const MAX_ENEMIES_PER_WAVE = 10;
 const FIRST_WAVE_DELAY = 45;
 const WAVE_INTERMISSION = 25;
 const AUDIO_PREFS_KEY = "assembly-ascendant-audio";
-const DEFAULT_AUDIO_PREFS: AudioPreferences = { musicEnabled: true, musicVolume: 0.38, sfxEnabled: true, sfxVolume: 0.55 };
+const DEFAULT_AUDIO_PREFS: AudioPreferences = { musicEnabled: true, musicVolume: 0.45, sfxEnabled: true, sfxVolume: 0.45 };
 const RECORDED_SFX: Partial<Record<SfxName, { paths: string[]; volume: number; rate: [number, number] }>> = {
   mineIron: { paths: ["/audio/sfx/mine-iron-metal.wav"], volume: 0.48, rate: [0.92, 1] },
   mineCopper: { paths: ["/audio/sfx/mine-copper-metal.wav"], volume: 0.38, rate: [1.02, 1.12] },
@@ -160,6 +160,15 @@ export default function Home() {
     if (!audioPrefs.musicEnabled) music.pause();
     else if (audioUnlocked) void music.play().catch(() => {});
   }, [audioPrefs, audioPrefsLoaded, audioUnlocked]);
+
+  useEffect(() => {
+    const music = musicRef.current;
+    if (!music) return;
+    music.pause();
+    music.load();
+    music.volume = audioPrefsRef.current.musicVolume;
+    if (audioUnlocked && audioPrefsRef.current.musicEnabled) void music.play().catch(() => {});
+  }, [expeditionStarted, audioUnlocked]);
 
   useEffect(() => {
     const unlockAudio = () => {
@@ -715,6 +724,7 @@ export default function Home() {
     }
     setIntroReady(true);
     setIntroLeaving(true);
+    musicRef.current?.pause();
     last.current = Date.now();
     window.setTimeout(() => {
       setExpeditionStarted(true);
@@ -724,7 +734,7 @@ export default function Home() {
 
   return (
     <main className={`game-shell ${g.won ? "victory" : ""} ${!expeditionStarted ? "intro-active" : ""}`} onPointerDownCapture={(event) => playInterfaceSound(event.target)}>
-      <audio ref={musicRef} src="/audio/theme-02-epic-mysterious-v2.wav" preload="metadata" loop />
+      <audio ref={musicRef} src={expeditionStarted ? "/audio/theme-02-epic-mysterious-v2.wav" : "/audio/gsf-discovery.mp3"} preload="metadata" loop />
       {!expeditionStarted && <section className={`opening-cinematic ${introReady ? "ready" : ""} ${introLeaving ? "leaving" : ""}`} aria-label="Assembly Ascendant opening screen">
         <div className="opening-camera" aria-hidden="true">
           <img src="/assets/opening-orbit.png" alt="" fetchPriority="high" />
@@ -736,7 +746,6 @@ export default function Home() {
         <div className="opening-vignette" aria-hidden="true" />
         <div className="opening-hud opening-hud-top" aria-hidden="true"><span>ORBITAL INSERTION // A2-01</span><span>LINK 98.7%</span></div>
         <div className="opening-hud opening-hud-bottom" aria-hidden="true"><span>KEPLER FRONTIER // UNKNOWN BIOSPHERE</span><span>DESCENT VECTOR LOCKED</span></div>
-        <button className="opening-skip" onClick={() => setIntroReady(true)}>SKIP CINEMATIC</button>
         <div className="opening-title-card">
           <div className="opening-mark">A<span>2</span></div>
           <small>EXPEDITIONARY WAR PROTOCOL</small>
@@ -762,7 +771,7 @@ export default function Home() {
             <button className="settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button>
           </div>
           <div className="audio-control">
-            <div className="audio-control-heading"><span><b>MUSIC</b><small>EPIC MYSTERIOUS THEME</small></span><button className={`audio-switch ${audioPrefs.musicEnabled ? "on" : ""}`} aria-pressed={audioPrefs.musicEnabled} onClick={() => updateAudioPref("musicEnabled", !audioPrefs.musicEnabled)}>{audioPrefs.musicEnabled ? "ON" : "OFF"}</button></div>
+            <div className="audio-control-heading"><span><b>MUSIC</b><small>{expeditionStarted ? "EPIC MYSTERIOUS THEME" : "GSF DISCOVERY // VITALEZZZ // CC0"}</small></span><button className={`audio-switch ${audioPrefs.musicEnabled ? "on" : ""}`} aria-pressed={audioPrefs.musicEnabled} onClick={() => updateAudioPref("musicEnabled", !audioPrefs.musicEnabled)}>{audioPrefs.musicEnabled ? "ON" : "OFF"}</button></div>
             <label><span>VOLUME</span><input type="range" min="0" max="1" step="0.01" value={audioPrefs.musicVolume} disabled={!audioPrefs.musicEnabled} onChange={(event) => updateAudioPref("musicVolume", Number(event.target.value))}/><output>{Math.round(audioPrefs.musicVolume * 100)}%</output></label>
           </div>
           <div className="audio-control">
