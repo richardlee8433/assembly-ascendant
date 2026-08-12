@@ -8,6 +8,13 @@ type MachineKey = "drills" | "furnaces" | "assemblers" | "labs" | "copperDrills"
 type MachineDamage = Record<MachineKey, number>;
 type HumanUnit = "marine" | "tank" | "fighter";
 type AlienUnit = "crawler" | "spitter" | "brute";
+type AudioPreferences = {
+  musicEnabled: boolean; musicVolume: number;
+  sfxEnabled: boolean; sfxVolume: number;
+};
+type SfxName = "ui" | "mineIron" | "mineCopper" | "purchase" | "reject" | "research" |
+  "marine" | "tank" | "fighter" | "crawler" | "spitter" | "brute" | "bruteRoar" |
+  "alarm" | "baseDamage" | "baseCritical" | "victory" | "defeat";
 type BattleUnit = {
   id: number; side: "human" | "alien"; kind: HumanUnit | AlienUnit;
   x: number; depth: number; hp: number; maxHp: number; attack: number; range: number; speed: number; cooldown: number;
@@ -19,7 +26,7 @@ type GameState = {
   copperOre: number; copperPlates: number; circuits: number; cores: number;
   copperDrills: number; copperFurnaces: number; circuitAssemblers: number; coreAssemblers: number;
   miningTech: number; smeltingTech: number; assemblyTech: number; won: boolean;
-  baseHp: number; nestHp: number; wave: number; kills: number; defenseWon: boolean; defenseLost: boolean;
+  baseHp: number; nestHp: number; wave: number; completedWaves: number; kills: number; defenseWon: boolean; defenseLost: boolean;
   damaged: MachineDamage;
 };
 
@@ -32,7 +39,7 @@ const initial: GameState = {
   copperOre: 0, copperPlates: 0, circuits: 0, cores: 0,
   copperDrills: 0, copperFurnaces: 0, circuitAssemblers: 0, coreAssemblers: 0,
   miningTech: 0, smeltingTech: 0, assemblyTech: 0, won: false,
-  baseHp: 1000, nestHp: 1000, wave: 0, kills: 0, defenseWon: false, defenseLost: false,
+  baseHp: 1000, nestHp: 1000, wave: 0, completedWaves: 0, kills: 0, defenseWon: false, defenseLost: false,
   damaged: blankDamage,
 };
 
@@ -43,6 +50,24 @@ const BASE_MAX_HP = 1000;
 const NEST_MAX_HP = 1000;
 const NEST_SHIELD_WAVES = 3;
 const FIRST_WAVE_DELAY = 45;
+const WAVE_INTERMISSION = 25;
+const AUDIO_PREFS_KEY = "assembly-ascendant-audio";
+const DEFAULT_AUDIO_PREFS: AudioPreferences = { musicEnabled: true, musicVolume: 0.38, sfxEnabled: true, sfxVolume: 0.55 };
+const RECORDED_SFX: Partial<Record<SfxName, { paths: string[]; volume: number; rate: [number, number] }>> = {
+  mineIron: { paths: ["/audio/sfx/mine-iron-metal.wav"], volume: 0.48, rate: [0.92, 1] },
+  mineCopper: { paths: ["/audio/sfx/mine-copper-metal.wav"], volume: 0.38, rate: [1.02, 1.12] },
+  marine: { paths: ["/audio/sfx/marine-01.ogg", "/audio/sfx/marine-02.ogg", "/audio/sfx/marine-03.ogg"], volume: 0.24, rate: [0.96, 1.08] },
+  tank: { paths: ["/audio/sfx/tank-01.ogg", "/audio/sfx/tank-02.ogg"], volume: 0.34, rate: [0.9, 1.02] },
+  fighter: { paths: ["/audio/sfx/fighter-01.ogg", "/audio/sfx/fighter-02.ogg"], volume: 0.26, rate: [1.02, 1.12] },
+  crawler: { paths: ["/audio/sfx/crawler-01.ogg", "/audio/sfx/crawler-02.ogg", "/audio/sfx/crawler-03.ogg"], volume: 0.18, rate: [0.94, 1.12] },
+  spitter: { paths: ["/audio/sfx/spitter-01.ogg", "/audio/sfx/spitter-02.ogg", "/audio/sfx/spitter-03.ogg"], volume: 0.22, rate: [0.92, 1.08] },
+  brute: { paths: ["/audio/sfx/brute-attack.ogg"], volume: 0.26, rate: [0.84, 0.96] },
+  bruteRoar: { paths: ["/audio/sfx/brute-roar.wav"], volume: 0.3, rate: [0.86, 0.94] },
+  alarm: { paths: ["/audio/sfx/wave-alarm.wav"], volume: 0.21, rate: [1, 1] },
+  baseDamage: { paths: ["/audio/sfx/base-impact.ogg"], volume: 0.3, rate: [0.9, 1.04] },
+  baseCritical: { paths: ["/audio/sfx/base-critical.ogg"], volume: 0.38, rate: [0.86, 0.96] },
+  defeat: { paths: ["/audio/sfx/defeat.wav"], volume: 0.34, rate: [1, 1] },
+};
 const ASSET = {
   ironOre: "/assets/iron-ore.webp",
   ironPlate: "/assets/iron-plate.webp",
@@ -64,10 +89,21 @@ export default function Home() {
   const [toast, setToast] = useState("Select a deposit and begin extraction.");
   const [battleUnits, setBattleUnits] = useState<BattleUnit[]>([]);
   const [waveCountdown, setWaveCountdown] = useState(FIRST_WAVE_DELAY);
+  const [audioPrefs, setAudioPrefs] = useState<AudioPreferences>(DEFAULT_AUDIO_PREFS);
+  const [audioPrefsLoaded, setAudioPrefsLoaded] = useState(false);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const last = useRef(Date.now());
   const battleUnitsRef = useRef<BattleUnit[]>([]);
   const gRef = useRef(g);
   const unitId = useRef(1);
+  const musicRef = useRef<HTMLAudioElement>(null);
+  const audioPrefsRef = useRef(audioPrefs);
+  const sfxContextRef = useRef<AudioContext | null>(null);
+  const sfxBuffersRef = useRef(new Map<string, Promise<AudioBuffer>>());
+  const combatSfxLastRef = useRef<Record<string, number>>({});
+  const endSfxPlayedRef = useRef<"victory" | "defeat" | null>(null);
+  const waveActiveRef = useRef(false);
 
   useEffect(() => {
     try {
@@ -82,6 +118,162 @@ export default function Home() {
 
   useEffect(() => { gRef.current = g; }, [g]);
   useEffect(() => { battleUnitsRef.current = battleUnits; }, [battleUnits]);
+
+  useEffect(() => {
+    const loadAudioPreferences = window.setTimeout(() => {
+      try {
+        const saved = localStorage.getItem(AUDIO_PREFS_KEY);
+        if (saved) setAudioPrefs({ ...DEFAULT_AUDIO_PREFS, ...JSON.parse(saved) });
+      } catch {}
+      setAudioPrefsLoaded(true);
+    }, 0);
+    return () => window.clearTimeout(loadAudioPreferences);
+  }, []);
+
+  useEffect(() => {
+    audioPrefsRef.current = audioPrefs;
+    if (audioPrefsLoaded) {
+      try { localStorage.setItem(AUDIO_PREFS_KEY, JSON.stringify(audioPrefs)); } catch {}
+    }
+    const music = musicRef.current;
+    if (!music) return;
+    music.volume = audioPrefs.musicVolume;
+    if (!audioPrefs.musicEnabled) music.pause();
+    else if (audioUnlocked) void music.play().catch(() => {});
+  }, [audioPrefs, audioPrefsLoaded, audioUnlocked]);
+
+  useEffect(() => {
+    const unlockAudio = () => {
+      setAudioUnlocked(true);
+      const music = musicRef.current;
+      if (music && audioPrefsRef.current.musicEnabled) {
+        music.volume = audioPrefsRef.current.musicVolume;
+        void music.play().catch(() => {});
+      }
+    };
+    document.addEventListener("pointerdown", unlockAudio, { once: true });
+    return () => document.removeEventListener("pointerdown", unlockAudio);
+  }, []);
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      const music = musicRef.current;
+      if (!music) return;
+      if (document.hidden) music.pause();
+      else if (audioUnlocked && audioPrefsRef.current.musicEnabled) void music.play().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [audioUnlocked]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setSettingsOpen(false); };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [settingsOpen]);
+
+  useEffect(() => () => { void sfxContextRef.current?.close(); }, []);
+
+  const playSfx = (name: SfxName) => {
+    if (!audioPrefsRef.current.sfxEnabled) return;
+    const context = sfxContextRef.current ?? new AudioContext();
+    sfxContextRef.current = context;
+    if (context.state === "suspended") void context.resume();
+    const now = context.currentTime;
+    const volume = audioPrefsRef.current.sfxVolume;
+    const recorded = RECORDED_SFX[name];
+    if (recorded) {
+      const playRecording = (path: string, level: number, rate: [number, number], delay = 0) => {
+        let pendingBuffer = sfxBuffersRef.current.get(path);
+        if (!pendingBuffer) {
+          pendingBuffer = fetch(path).then((response) => {
+            if (!response.ok) throw new Error(`Unable to load sound effect: ${path}`);
+            return response.arrayBuffer();
+          }).then((data) => context.decodeAudioData(data));
+          sfxBuffersRef.current.set(path, pendingBuffer);
+        }
+        void pendingBuffer.then((buffer) => {
+          if (!audioPrefsRef.current.sfxEnabled || context.state === "closed") return;
+          const source = context.createBufferSource();
+          const gain = context.createGain();
+          source.buffer = buffer;
+          source.playbackRate.value = rate[0] + Math.random() * (rate[1] - rate[0]);
+          gain.gain.value = level * audioPrefsRef.current.sfxVolume;
+          source.connect(gain).connect(context.destination);
+          source.start(context.currentTime + delay);
+        }).catch(() => {});
+      };
+      const path = recorded.paths[Math.floor(Math.random() * recorded.paths.length)];
+      playRecording(path, recorded.volume, recorded.rate);
+      if (name === "tank") {
+        playRecording("/audio/sfx/base-critical.ogg", 0.3, [0.78, 0.88], 0.035);
+      }
+      return;
+    }
+    const tone = (frequency: number, delay: number, duration: number, level: number, type: OscillatorType = "sine", endFrequency?: number) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const start = now + delay;
+      oscillator.type = type;
+      oscillator.frequency.setValueAtTime(frequency, start);
+      if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(endFrequency, start + duration);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, level * volume), start + Math.min(0.012, duration * 0.2));
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start(start);
+      oscillator.stop(start + duration + 0.02);
+    };
+    const noiseHit = (delay: number, duration: number, level: number, cutoff: number) => {
+      const length = Math.max(1, Math.floor(context.sampleRate * duration));
+      const buffer = context.createBuffer(1, length, context.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2);
+      const source = context.createBufferSource();
+      const filter = context.createBiquadFilter();
+      const gain = context.createGain();
+      const start = now + delay;
+      source.buffer = buffer;
+      filter.type = "lowpass";
+      filter.frequency.value = cutoff;
+      gain.gain.setValueAtTime(level * volume, start);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      source.connect(filter).connect(gain).connect(context.destination);
+      source.start(start);
+    };
+
+    if (name === "ui") tone(720, 0, 0.055, 0.025, "sine", 430);
+    if (name === "purchase") {
+      noiseHit(0, 0.055, 0.035, 1800);
+      tone(196, 0, 0.10, 0.05, "triangle", 155);
+      tone(392, 0.065, 0.13, 0.045, "sine");
+      tone(587.3, 0.13, 0.18, 0.04, "sine");
+    }
+    if (name === "reject") {
+      tone(155, 0, 0.16, 0.065, "sawtooth", 92);
+      tone(116.5, 0.075, 0.18, 0.05, "square", 73);
+    }
+    if (name === "research") {
+      [440, 554.4, 659.3, 880].forEach((frequency, index) => tone(frequency, index * 0.07, 0.28, 0.045 - index * 0.004, index === 3 ? "sine" : "triangle"));
+      tone(1760, 0.25, 0.42, 0.022, "sine", 1320);
+    }
+    if (name === "victory") {
+      [293.7, 370, 440, 587.3, 740].forEach((frequency, index) => tone(frequency, index * 0.105, 0.62, 0.055 - index * 0.004, index < 2 ? "triangle" : "sine"));
+      tone(146.8, 0, 1.15, 0.055, "triangle", 220);
+    }
+  };
+
+  const playInterfaceSound = (target: EventTarget | null) => {
+    if (!(target instanceof Element)) return;
+    const button = target.closest("button");
+    if (!button || button.disabled || button.matches(".asteroid,.shop-row,.upgrade-card,.tech-card")) return;
+    playSfx("ui");
+  };
+
+  const updateAudioPref = <K extends keyof AudioPreferences>(key: K, value: AudioPreferences[K]) => {
+    setAudioPrefs((current) => ({ ...current, [key]: value }));
+  };
 
   const mult = useMemo(() => ({
     mining: (g.efficiency || 1) * (1 + g.miningTech * 0.25),
@@ -185,10 +377,12 @@ export default function Home() {
       const state = gRef.current;
       if (state.defenseWon || state.defenseLost) return;
       if (state.wave === 0 && state.assemblers === 0) return;
+      if (waveActiveRef.current || battleUnitsRef.current.some((unit) => unit.side === "alien")) return;
       setWaveCountdown((n) => {
+        if (n === 11) playSfx("alarm");
         if (n > 1) return n - 1;
         spawnWave();
-        return 42;
+        return WAVE_INTERMISSION;
       });
     }, 1000);
     return () => window.clearInterval(id);
@@ -203,6 +397,7 @@ export default function Home() {
       const dt = 0.1;
       const units = battleUnitsRef.current.map((u) => ({ ...u, cooldown: Math.max(0, u.cooldown - dt) }));
       const breached = new Set<number>();
+      const attackSounds = new Set<HumanUnit | AlienUnit>();
       let baseDamage = 0;
       let nestDamage = 0;
 
@@ -211,6 +406,7 @@ export default function Home() {
         if (unit.side === "human" && unit.x >= 92) {
           if (unit.cooldown <= 0) {
             if (gRef.current.wave >= NEST_SHIELD_WAVES) nestDamage += unit.attack;
+            attackSounds.add(unit.kind);
             unit.cooldown = 0.9;
           }
           continue;
@@ -232,6 +428,7 @@ export default function Home() {
         if (target && distance <= unit.range) {
           if (unit.cooldown <= 0) {
             target.hp -= unit.attack;
+            attackSounds.add(unit.kind);
             if (unit.kind === "tank" || unit.kind === "fighter") {
               const splash = unit.kind === "tank" ? 0.38 : 0.28;
               for (const nearby of units) if (nearby.side !== unit.side && nearby.id !== target.id && nearby.hp > 0 && Math.abs(nearby.x - target.x) < 3.5) nearby.hp -= unit.attack * splash;
@@ -243,12 +440,41 @@ export default function Home() {
         }
       }
 
+      const soundNow = performance.now();
+      const soundGap: Record<HumanUnit | AlienUnit, number> = { marine: 170, tank: 520, fighter: 420, crawler: 420, spitter: 620, brute: 800 };
+      for (const kind of attackSounds) {
+        if (soundNow - (combatSfxLastRef.current[kind] || 0) < soundGap[kind]) continue;
+        combatSfxLastRef.current[kind] = soundNow;
+        playSfx(kind);
+      }
+
       const killed = units.filter((u) => u.side === "alien" && u.hp <= 0 && !breached.has(u.id)).length;
       const survivors = units.filter((u) => u.hp > 0);
+      const aliensRemaining = survivors.some((unit) => unit.side === "alien");
+      const baseWillFall = state.baseHp - baseDamage <= 0;
       battleUnitsRef.current = survivors;
       setBattleUnits(survivors);
 
+      if (!aliensRemaining && waveActiveRef.current && !baseWillFall) {
+        waveActiveRef.current = false;
+        setWaveCountdown(WAVE_INTERMISSION);
+        setG((s) => ({ ...s, completedWaves: Math.max(s.completedWaves, s.wave) }));
+      }
+
       if (baseDamage > 0 || nestDamage > 0 || killed > 0) {
+        if (baseDamage > 0) {
+          playSfx("baseDamage");
+          const nextBaseHp = Math.max(0, state.baseHp - baseDamage);
+          if ([750, 500, 250].some((threshold) => state.baseHp > threshold && nextBaseHp <= threshold)) playSfx("baseCritical");
+          if (nextBaseHp <= 0 && endSfxPlayedRef.current !== "defeat") {
+            endSfxPlayedRef.current = "defeat";
+            playSfx("defeat");
+          }
+        }
+        if (nestDamage > 0 && state.nestHp - nestDamage <= 0 && endSfxPlayedRef.current !== "victory") {
+          endSfxPlayedRef.current = "victory";
+          playSfx("victory");
+        }
         setG((s) => {
           const previousHp = s.baseHp;
           const nextHp = Math.max(0, previousHp - baseDamage);
@@ -286,21 +512,29 @@ export default function Home() {
   };
 
   const mine = () => {
-    if (g.defenseLost || g.defenseWon) return;
+    if (g.defenseLost || g.defenseWon) { playSfx("reject"); return; }
     const amount = g.clickLevel * mult.mining;
     setG((s) => mineMode === "iron" ? { ...s, ore: s.ore + amount } : { ...s, copperOre: s.copperOre + amount });
     setPulse((n) => n + 1);
     setToast(`+${fmt(amount)} ${mineMode} ore`);
+    playSfx(mineMode === "iron" ? "mineIron" : "mineCopper");
   };
 
-  const spend = (resource: keyof GameState, amount: number, update: (s: GameState) => GameState) => {
-    setG((s) => !s.defenseLost && !s.defenseWon && typeof s[resource] === "number" && (s[resource] as number) >= amount ? update({ ...s, [resource]: (s[resource] as number) - amount }) : s);
+  const spend = (resource: keyof GameState, amount: number, update: (s: GameState) => GameState, successSound: SfxName = "purchase") => {
+    const current = gRef.current;
+    if (current.defenseLost || current.defenseWon || typeof current[resource] !== "number" || (current[resource] as number) < amount) {
+      playSfx("reject");
+      return false;
+    }
+    setG((s) => update({ ...s, [resource]: (s[resource] as number) - amount }));
+    playSfx(successSound);
+    return true;
   };
 
   const research = (kind: "miningTech" | "smeltingTech" | "assemblyTech") => {
     const c = costs[kind];
-    if (g[kind] >= 5) return;
-    spend("science", c, (s) => ({ ...s, [kind]: s[kind] + 1 }));
+    if (g[kind] >= 5) { playSfx("reject"); return; }
+    spend("science", c, (s) => ({ ...s, [kind]: s[kind] + 1 }), "research");
   };
 
   const spawnWave = () => {
@@ -308,7 +542,7 @@ export default function Home() {
     if (state.defenseWon || state.defenseLost) return;
     const wave = state.wave + 1;
     const scale = 1 + (wave - 1) * 0.14;
-    const count = Math.min(14, 3 + Math.floor(wave * 1.25));
+    const count = wave <= 3 ? wave + 2 : Math.min(14, 5 + Math.floor((wave - 3) * 1.1));
     const enemies: BattleUnit[] = Array.from({ length: count }).map((_, i) => {
       const isBrute = wave >= 3 && i === count - 1 && wave % 2 === 1;
       const isSpitter = !isBrute && wave >= 2 && i % 4 === 3;
@@ -321,10 +555,12 @@ export default function Home() {
         speed: isBrute ? 2.25 : isSpitter ? 3.1 : 4.4, cooldown: i * 0.08,
       };
     });
-    const next = [...battleUnitsRef.current, ...enemies];
+    waveActiveRef.current = true;
+    const next = [...battleUnitsRef.current.filter((unit) => unit.side === "human"), ...enemies];
     battleUnitsRef.current = next;
     setBattleUnits(next);
     setG((s) => ({ ...s, wave: s.wave + 1 }));
+    if (enemies.some((enemy) => enemy.kind === "brute")) playSfx("bruteRoar");
   };
 
   const deployRobot = (kind: HumanUnit) => {
@@ -376,38 +612,67 @@ export default function Home() {
 
   const missionReady = g.gears >= 100 && g.circuits >= 100 && g.cores >= 25;
   const missionProgress = Math.min(100, ((Math.min(g.gears, 100) + Math.min(g.circuits, 100) + Math.min(g.cores, 25) * 4) / 300) * 100);
+  const activeAlienCount = battleUnits.filter((unit) => unit.side === "alien").length;
+  const defenseStatus = g.wave === 0 && g.assemblers === 0
+    ? "STANDBY — BUILD A GEAR PRESS"
+    : activeAlienCount > 0
+      ? `WAVE ${g.wave} ENGAGED · ${activeAlienCount} HOSTILES`
+      : `WAVE ${g.wave + 1} IN ${waveCountdown}s`;
   const activate = () => missionReady && setG((s) => ({ ...s, won: true }));
 
   const reset = () => {
     if (!window.confirm("Reset the factory and erase this local save?")) return;
     setG(initial); localStorage.removeItem("assembly-ascendant-save"); setToast("New landing. Deposits detected.");
     battleUnitsRef.current = []; setBattleUnits([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory");
+    combatSfxLastRef.current = {}; endSfxPlayedRef.current = null; waveActiveRef.current = false;
   };
 
   const newExpedition = () => {
     setG(initial); localStorage.removeItem("assembly-ascendant-save"); setToast("New landing. Deposits detected.");
     battleUnitsRef.current = []; setBattleUnits([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory"); last.current = Date.now();
+    combatSfxLastRef.current = {}; endSfxPlayedRef.current = null; waveActiveRef.current = false;
   };
 
   return (
-    <main className={`game-shell ${g.won ? "victory" : ""}`}>
+    <main className={`game-shell ${g.won ? "victory" : ""}`} onPointerDownCapture={(event) => playInterfaceSound(event.target)}>
+      <audio ref={musicRef} src="/audio/theme-02-epic-mysterious-v2.wav" preload="metadata" loop />
+      {settingsOpen && <div className="settings-backdrop" onPointerDown={() => setSettingsOpen(false)}>
+        <section className="audio-settings" role="dialog" aria-modal="true" aria-labelledby="audio-settings-title" onPointerDown={(event) => event.stopPropagation()}>
+          <div className="settings-titlebar">
+            <div><small>SYSTEM / AUDIO</small><strong id="audio-settings-title">AUDIO SETTINGS</strong></div>
+            <button className="settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button>
+          </div>
+          <div className="audio-control">
+            <div className="audio-control-heading"><span><b>MUSIC</b><small>EPIC MYSTERIOUS THEME</small></span><button className={`audio-switch ${audioPrefs.musicEnabled ? "on" : ""}`} aria-pressed={audioPrefs.musicEnabled} onClick={() => updateAudioPref("musicEnabled", !audioPrefs.musicEnabled)}>{audioPrefs.musicEnabled ? "ON" : "OFF"}</button></div>
+            <label><span>VOLUME</span><input type="range" min="0" max="1" step="0.01" value={audioPrefs.musicVolume} disabled={!audioPrefs.musicEnabled} onChange={(event) => updateAudioPref("musicVolume", Number(event.target.value))}/><output>{Math.round(audioPrefs.musicVolume * 100)}%</output></label>
+          </div>
+          <div className="audio-control">
+            <div className="audio-control-heading"><span><b>SOUND EFFECTS</b><small>INTERFACE / COMBAT / FACTORY</small></span><button className={`audio-switch ${audioPrefs.sfxEnabled ? "on" : ""}`} aria-pressed={audioPrefs.sfxEnabled} onClick={() => updateAudioPref("sfxEnabled", !audioPrefs.sfxEnabled)}>{audioPrefs.sfxEnabled ? "ON" : "OFF"}</button></div>
+            <label><span>VOLUME</span><input type="range" min="0" max="1" step="0.01" value={audioPrefs.sfxVolume} disabled={!audioPrefs.sfxEnabled} onChange={(event) => updateAudioPref("sfxVolume", Number(event.target.value))}/><output>{Math.round(audioPrefs.sfxVolume * 100)}%</output></label>
+          </div>
+          <p className="audio-note">Audio begins after your first interaction. Settings are saved on this device.</p>
+        </section>
+      </div>}
       {(g.defenseLost || g.defenseWon) && <div className={`expedition-end ${g.defenseWon ? "won" : "lost"}`}>
         <div className="end-scan"/><small>EXPEDITION A2-{String(g.wave).padStart(2, "0")} // FINAL REPORT</small>
         <strong>{g.defenseWon ? "PLANET SECURED" : "FACTORY LOST"}</strong>
         <p>{g.defenseWon ? "The alien hive has collapsed. Your automated war machine owns this world." : "The base core was breached. Production, combat and research are permanently offline."}</p>
-        <div className="end-stats"><span><b>{g.wave}</b>WAVES</span><span><b>{g.kills}</b>KILLS</span><span><b>{fmt(g.nestHp)}</b>NEST HP</span></div>
+        <div className="end-stats"><span><b>{g.completedWaves}</b>WAVES SURVIVED</span><span><b>{g.kills}</b>KILLS</span><span><b>{fmt(g.nestHp)}</b>NEST HP</span></div>
         <button onClick={newExpedition}>NEW EXPEDITION</button>
       </div>}
       {g.won && <div className="victory-banner"><span>ORBITAL CORE ONLINE</span><strong>PLANETARY FACTORY STATUS: AUTONOMOUS</strong><button onClick={() => setG((s) => ({ ...s, won: false }))}>RETURN TO FACTORY</button></div>}
       <header className="topbar">
         <div className="brand"><span className="brand-mark">A<span>2</span></span><div><strong>ASSEMBLY ASCENDANT</strong><small>EXPEDITIONARY WAR PROTOCOL // v0.1</small></div></div>
-        <div className="objective"><span>DEFENSE NETWORK</span><strong>{g.defenseWon ? "PLANET SECURED" : g.defenseLost ? "GAME OVER — FACTORY LOST" : g.wave === 0 && g.assemblers === 0 ? "STANDBY — BUILD A GEAR PRESS" : `WAVE ${g.wave + 1} IN ${waveCountdown}s`}</strong></div>
-        <button className="reset" onClick={reset}>↻ RESET</button>
+        <div className="objective"><span>DEFENSE NETWORK</span><strong>{g.defenseWon ? "PLANET SECURED" : g.defenseLost ? "GAME OVER — FACTORY LOST" : defenseStatus}</strong></div>
+        <div className="top-actions">
+          <button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="Open audio settings">⚙ SETTINGS</button>
+          <button className="reset" onClick={reset}>↻ RESET</button>
+        </div>
       </header>
 
       <nav className="mode-tabs" aria-label="Game sections">
         <button className={view === "factory" ? "active" : ""} onClick={() => setView("factory")}><span>01</span> FACTORY <small>{missionReady ? "CORE READY" : "PRODUCTION"}</small></button>
-        <button className={`${view === "defense" ? "active" : ""} ${g.defenseLost ? "danger" : ""}`} onClick={() => setView("defense")}><span>02</span> DEFENSE <small>{g.defenseWon ? "SECURED" : g.defenseLost ? "BREACHED" : g.wave === 0 && g.assemblers === 0 ? "STANDBY" : `W${g.wave + 1} · ${waveCountdown}s`}</small></button>
+        <button className={`${view === "defense" ? "active" : ""} ${g.defenseLost ? "danger" : ""}`} onClick={() => setView("defense")}><span>02</span> DEFENSE <small>{g.defenseWon ? "SECURED" : g.defenseLost ? "BREACHED" : g.wave === 0 && g.assemblers === 0 ? "STANDBY" : activeAlienCount > 0 ? `W${g.wave} · ${activeAlienCount} HOSTILES` : `W${g.wave + 1} · ${waveCountdown}s`}</small></button>
         <div className="base-mini"><span>BASE</span><div><i style={{ width: `${Math.max(0, g.baseHp / BASE_MAX_HP * 100)}%` }}/></div><b>{fmt(g.baseHp)} HP</b></div>
       </nav>
 
@@ -438,7 +703,7 @@ export default function Home() {
             </button>
             <div className="mine-readout"><span>{mineMode.toUpperCase()} EXTRACTION</span><strong>{fmt(g.clickLevel * mult.mining)} ORE / CLICK</strong><small>{toast}</small></div>
           </div>
-          <button className="upgrade-card" disabled={g.plates < costs.pick} onClick={() => spend("plates", costs.pick, (s) => ({ ...s, clickLevel: s.clickLevel + 1 }))}>
+          <button className={`upgrade-card ${g.plates < costs.pick ? "unavailable" : ""}`} aria-disabled={g.plates < costs.pick} onClick={() => spend("plates", costs.pick, (s) => ({ ...s, clickLevel: s.clickLevel + 1 }))}>
             <span className="machine-icon">⛏</span><span><b>Reinforced Extractor</b><small>Manual extraction +1 base yield</small></span><Price icon="▰" value={costs.pick}/>
           </button>
 
@@ -547,7 +812,7 @@ function DefenseView({ g, units, countdown, deployRobot, repairBase, repairMachi
   return <section className={`defense-view ${g.defenseLost ? "lost" : ""} ${g.defenseWon ? "secured" : ""}`}>
     <div className="defense-status-row">
       <div className="war-stat base"><small>FACTORY BASE</small><strong>{fmt(g.baseHp)} / {BASE_MAX_HP}</strong><div><i style={{ width: `${g.baseHp / BASE_MAX_HP * 100}%` }}/></div></div>
-      <div className="war-stat wave"><small>NEXT ASSAULT</small><strong>{g.defenseWon ? "SECURED" : g.defenseLost ? "OFFLINE" : g.wave === 0 && g.assemblers === 0 ? "DEFENSE STANDBY" : `WAVE ${g.wave + 1} · ${countdown}s`}</strong><span>{g.wave === 0 && g.assemblers === 0 ? "BUILD A GEAR PRESS TO ARM THE PERIMETER" : `${alienCount} HOSTILES ON FIELD`}</span></div>
+      <div className="war-stat wave"><small>{alienCount > 0 ? "ACTIVE ASSAULT" : "NEXT ASSAULT"}</small><strong>{g.defenseWon ? "SECURED" : g.defenseLost ? "OFFLINE" : g.wave === 0 && g.assemblers === 0 ? "DEFENSE STANDBY" : alienCount > 0 ? `WAVE ${g.wave} · ENGAGED` : `WAVE ${g.wave + 1} · ${countdown}s`}</strong><span>{g.wave === 0 && g.assemblers === 0 ? "BUILD A GEAR PRESS TO ARM THE PERIMETER" : alienCount > 0 ? `${alienCount} HOSTILES ON FIELD` : `${g.completedWaves} WAVES SURVIVED · REARM AND REPAIR`}</span></div>
       <div className="war-stat kills"><small>COMBAT RECORD</small><strong>{g.kills} KILLS</strong><span>{robotCount} ROBOTS ACTIVE</span></div>
       <div className="war-stat nest"><small>ALIEN NEST</small><strong>{g.wave < NEST_SHIELD_WAVES ? `SHIELDED · WAVE ${NEST_SHIELD_WAVES}` : `${fmt(g.nestHp)} / ${NEST_MAX_HP}`}</strong><div><i style={{ width: `${g.nestHp / NEST_MAX_HP * 100}%` }}/></div></div>
     </div>
@@ -607,7 +872,7 @@ function Resource({ icon, name, value, flow, color }: { icon: string; name: stri
 }
 function Price({ icon, value }: { icon: string; value: number }) { return <span className="price"><i><GameIcon icon={icon}/></i>{fmt(value)}</span>; }
 function ShopRow(p: { name: string; detail: string; icon: string; count: number; priceIcon: string; price: number; canBuy: boolean; onBuy: () => void }) {
-  return <button className="shop-row" disabled={!p.canBuy} onClick={p.onBuy}><span className="shop-icon"><GameIcon icon={p.icon}/></span><span className="shop-copy"><b>{p.name}</b><small>{p.detail}</small></span><span className="owned">×{p.count}</span><Price icon={p.priceIcon} value={p.price}/></button>;
+  return <button className={`shop-row ${!p.canBuy ? "unavailable" : ""}`} aria-disabled={!p.canBuy} onClick={p.onBuy}><span className="shop-icon"><GameIcon icon={p.icon}/></span><span className="shop-copy"><b>{p.name}</b><small>{p.detail}</small></span><span className="owned">×{p.count}</span><Price icon={p.priceIcon} value={p.price}/></button>;
 }
 function MachineBank({ icon, name, count, damaged = 0, color = "iron", large = false, compact = false }: { icon: string; name: string; count: number; damaged?: number; color?: string; large?: boolean; compact?: boolean }) {
   const active = Math.max(0, count - damaged);
@@ -643,7 +908,8 @@ function ComponentLine({ name, recipe, icon, count, damaged = 0, rate, outputIco
 }
 function TechCard({ icon, name, level, detail, cost: c, science, onClick }: { icon: string; name: string; level: number; detail: string; cost: number; science: number; onClick: () => void }) {
   const maxed = level >= 5;
-  return <button className="tech-card" disabled={maxed || science < c} onClick={onClick}><span><GameIcon icon={icon}/></span><div><b>{name}</b><small>{detail}</small><div className="tech-pips">{Array.from({ length: 5 }).map((_, i) => <i className={i < level ? "on" : ""} key={i}/>)}</div></div><Price icon={ASSET.research} value={maxed ? 0 : c}/></button>;
+  const unavailable = maxed || science < c;
+  return <button className={`tech-card ${unavailable ? "unavailable" : ""}`} aria-disabled={unavailable} onClick={onClick}><span><GameIcon icon={icon}/></span><div><b>{name}</b><small>{detail}</small><div className="tech-pips">{Array.from({ length: 5 }).map((_, i) => <i className={i < level ? "on" : ""} key={i}/>)}</div></div><Price icon={ASSET.research} value={maxed ? 0 : c}/></button>;
 }
 function Requirement({ icon, name, have, need }: { icon: string; name: string; have: number; need: number }) {
   const done = have >= need;
