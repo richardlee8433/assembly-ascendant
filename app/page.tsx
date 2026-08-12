@@ -54,6 +54,7 @@ const RESEARCH_PER_CORE = 4;
 const BASE_MAX_HP = 1000;
 const NEST_MAX_HP = 1000;
 const NEST_SHIELD_WAVES = 3;
+const MAX_ENEMIES_PER_WAVE = 10;
 const FIRST_WAVE_DELAY = 45;
 const WAVE_INTERMISSION = 25;
 const AUDIO_PREFS_KEY = "assembly-ascendant-audio";
@@ -613,7 +614,8 @@ export default function Home() {
     if (state.defenseWon || state.defenseLost) return;
     const wave = state.wave + 1;
     const scale = 1 + (wave - 1) * 0.14;
-    const count = wave <= 3 ? wave + 2 : Math.min(14, 5 + Math.floor((wave - 3) * 1.1));
+    // Keep early waves readable: 2, 3, 4, 5, 6... with a lower late-game cap.
+    const count = Math.min(MAX_ENEMIES_PER_WAVE, 2 + Math.floor(wave * 0.8));
     const enemies: BattleUnit[] = Array.from({ length: count }).map((_, i) => {
       const isBrute = wave >= 3 && i === count - 1 && wave % 2 === 1;
       const isSpitter = !isBrute && wave >= 2 && i % 4 === 3;
