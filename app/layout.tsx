@@ -17,8 +17,9 @@ export const metadata: Metadata = {
     images: ["/og.png"],
   },
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: "/assets/logo-mark.png",
+    shortcut: "/assets/logo-mark.png",
+    apple: "/assets/logo-mark.png",
   },
 };
 
