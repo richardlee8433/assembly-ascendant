@@ -111,3 +111,8 @@ footer{height:30px;border-top:1px solid #273437;color:#526166;background:#0a1011
 
 /* Lift the cinematic background by 20% while preserving the UI contrast. */
 .opening-camera>img{filter:saturate(.82) contrast(1.12) brightness(.864)}
+
+/* Detailed resource deposits and battlefield structures */
+.asteroid{width:180px;height:180px;border:0;background:transparent;clip-path:none;display:grid;place-items:center;filter:drop-shadow(0 16px 13px #000b)}.asteroid:before{display:none}.asteroid>img{display:block;width:100%;height:100%;object-fit:contain;pointer-events:none;user-select:none;transition:filter .15s,transform .12s}.asteroid:hover>img{filter:brightness(1.1) drop-shadow(0 0 10px #75dfe322);transform:scale(1.035)}.asteroid:active>img{transform:scale(.94) rotate(-2deg)}
+.base-structure,.nest-structure{width:170px;height:145px;border:0;background:none;clip-path:none;box-shadow:none;justify-content:flex-end}.base-structure{left:.5%}.nest-structure{right:.5%}.base-structure:before,.base-structure:after{display:none}.base-structure>img,.nest-structure>img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;object-position:center bottom;filter:drop-shadow(0 12px 8px #000c);pointer-events:none;user-select:none}.base-structure b,.nest-structure b{position:relative;z-index:2;margin:0 0 2px;padding:3px 6px;background:#071012c9;text-shadow:0 1px 3px #000}.nest-structure>img{animation:nestPulse 2s ease-in-out infinite}.nest-structure.shielded{border:0;background:none;box-shadow:none}.nest-structure.shielded:after{inset:8px 2px 1px;border-radius:50%;z-index:3;pointer-events:none}
+@media(max-width:720px){.base-structure,.nest-structure{width:132px;height:116px}}

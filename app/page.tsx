@@ -75,9 +75,9 @@ const RECORDED_SFX: Partial<Record<SfxName, { paths: string[]; volume: number; r
   defeat: { paths: ["/audio/sfx/defeat.wav"], volume: 0.34, rate: [1, 1] },
 };
 const ASSET = {
-  ironOre: "/assets/iron-ore.webp",
+  ironOre: "/assets/iron-deposit.webp",
   ironPlate: "/assets/iron-plate.webp",
-  copperOre: "/assets/copper-ore.webp",
+  copperOre: "/assets/copper-deposit.webp",
   copperPlate: "/assets/copper-plate.webp",
   gear: "/assets/gear.webp",
   circuit: "/assets/circuit.webp",
@@ -826,7 +826,7 @@ export default function Home() {
           <div className={`mine-stage compact ${mineMode}`}>
             <div className="grid-lines" />
             <button className="asteroid" onClick={mine} aria-label={`Mine ${mineMode} ore`}>
-              <span className="rock r1"/><span className="rock r2"/><span className="rock r3"/><span className="rock r4"/>
+              <img src={mineMode === "iron" ? ASSET.ironOre : ASSET.copperOre} alt="" draggable={false}/>
               <span key={pulse} className="spark">+{fmt(g.clickLevel * mult.mining)}</span>
             </button>
             <div className="mine-readout"><span>{mineMode.toUpperCase()} EXTRACTION</span><strong>{fmt(g.clickLevel * mult.mining)} ORE / CLICK</strong><small>{toast}</small></div>
@@ -947,8 +947,8 @@ function DefenseView({ g, units, attackEffects, countdown, deployRobot, repairBa
 
     <div className="battlefield" aria-label="Automated defense battlefield">
       <div className="battle-sky"><i/><i/><i/><i/><i/></div>
-      <div className="base-structure"><span>A2</span><b>BASE</b></div>
-      <div className={`nest-structure ${g.wave < NEST_SHIELD_WAVES ? "shielded" : ""}`}><span>☣</span><b>{g.wave < NEST_SHIELD_WAVES ? "SHIELDED" : "NEST"}</b></div>
+      <div className="base-structure"><img src="/assets/base-structure.webp" alt="" draggable={false}/><b>BASE</b></div>
+      <div className={`nest-structure ${g.wave < NEST_SHIELD_WAVES ? "shielded" : ""}`}><img src="/assets/alien-nest.webp" alt="" draggable={false}/><b>{g.wave < NEST_SHIELD_WAVES ? "SHIELDED" : "NEST"}</b></div>
       <div className="battle-ground"/>
       <div className="frontline-marker"><span>FRONT LINE</span></div>
       <svg className="combat-fx" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
