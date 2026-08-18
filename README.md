@@ -2,20 +2,19 @@
 
 An incremental factory game with automated production, research, and a 2.5D planetary-defense battlefield.
 
-**Release:** v0.1  
+**Release:** v0.2
 **Play:** https://assembly-ascendant.netlify.app
 
 ## Features
 
-- Manual mining that grows into automated iron, copper, component, core, and research lines
-- Live production and consumption rates with real resource bottlenecks
-- Factory equipment visualized as expanding production lines
-- Marine, siege tank, and strike-fighter deployment
-- Automated alien waves with crawlers, acid spitters, and armored brutes
-- 2.5D depth, projectile, recoil, hover, and attack effects
-- Base damage can disable real factory equipment
-- Permanent victory and game-over states with a new-expedition loop
-- Browser-local save data
+- A streamlined iron, steel, copper, circuit, and core production network
+- Automated frontline progression across escalating nests and region bosses
+- Marine, siege-tank, and strike-fighter deployment with optional auto-reinforcement
+- Safe retreats instead of punitive game-over resets
+- Up to 24 hours of offline factory and expedition progress
+- Voluntary orbital redeployment with permanent Industry, Military, and Expedition technology
+- Progressive unlocks that reveal new systems as territory is secured
+- Browser-local saves with legacy v0.1 migration
 
 ## Run locally
 
