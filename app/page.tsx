@@ -1,1052 +1,570 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-type OreMode = "iron" | "copper";
-type ViewMode = "factory" | "defense";
-type MachineKey = "drills" | "furnaces" | "assemblers" | "labs" | "copperDrills" | "copperFurnaces" | "circuitAssemblers" | "coreAssemblers";
-type MachineDamage = Record<MachineKey, number>;
-type HumanUnit = "marine" | "tank" | "fighter";
-type AlienUnit = "crawler" | "spitter" | "brute";
-type AudioPreferences = {
-  musicEnabled: boolean; musicVolume: number;
-  sfxEnabled: boolean; sfxVolume: number;
+type ViewMode = "factory" | "frontline" | "command";
+type ResourceKey = "iron" | "steel" | "copper" | "circuits" | "cores";
+type MachineKey = "ironDrills" | "furnaces" | "copperDrills" | "circuitFabs" | "coreFabs";
+type UnitKey = "marine" | "tank" | "fighter";
+type TechKey = "landing" | "bulk" | "logistics" | "autoCommand" | "salvage" | "strike" | "telemetry" | "bossAutonomy" | "deepScan";
+type MachineLevels = Record<MachineKey, number>;
+type Army = Record<UnitKey, number>;
+type DeploymentCooldowns = Record<UnitKey, number>;
+type TechState = Record<TechKey, number>;
+
+type GameState = {
+  version: 2; savedAt: number;
+  iron: number; steel: number; copper: number; circuits: number; cores: number; data: number;
+  machines: MachineLevels; army: Army; autoTrain: boolean; deployCooldowns: DeploymentCooldowns;
+  region: number; nest: number; nestsCleared: number; nestHp: number; nestMaxHp: number;
+  baseHp: number; retreats: number; bossEngaged: boolean; ascensions: number; tech: TechState;
+  lifetimeCrafted: number; lifetimeKills: number; lifetimeNests: number;
 };
-type SfxName = "ui" | "mineIron" | "mineCopper" | "purchase" | "reject" | "research" |
-  "marine" | "tank" | "fighter" | "crawler" | "spitter" | "brute" | "bruteRoar" |
-  "alarm" | "baseDamage" | "baseCritical" | "victory" | "defeat";
+type OfflineReport = { seconds: number; steel: number; circuits: number; cores: number; nests: number; status: string };
+type TechDefinition = { key: TechKey; branch: "industry" | "military" | "expedition"; name: string; detail: string; cost: number };
+type AlienKey = "crawler" | "spitter" | "brute";
 type BattleUnit = {
-  id: number; side: "human" | "alien"; kind: HumanUnit | AlienUnit;
+  id: number; side: "human" | "alien"; kind: UnitKey | AlienKey;
   x: number; depth: number; hp: number; maxHp: number; attack: number; range: number; speed: number; cooldown: number;
-  targetId?: number; moving: boolean; attackFx: number; hitFx: number;
+  targetId?: number; squadSize?: number; formationSlot?: number; moving: boolean; attackFx: number; hitFx: number;
 };
 type AttackEffect = {
-  id: number; side: "human" | "alien"; kind: HumanUnit | AlienUnit;
+  id: number; side: "human" | "alien"; kind: UnitKey | AlienKey;
   fromX: number; fromY: number; toX: number; toY: number; life: number;
 };
-type GameState = {
-  ore: number; plates: number; gears: number; science: number;
-  drills: number; furnaces: number; assemblers: number; labs: number;
-  clickLevel: number; efficiency: number;
-  copperOre: number; copperPlates: number; circuits: number; cores: number;
-  copperDrills: number; copperFurnaces: number; circuitAssemblers: number; coreAssemblers: number;
-  miningTech: number; smeltingTech: number; assemblyTech: number; won: boolean;
-  baseHp: number; nestHp: number; wave: number; completedWaves: number; kills: number; defenseWon: boolean; defenseLost: boolean;
-  damaged: MachineDamage;
-};
+type AudioPreferences = { musicEnabled: boolean; musicVolume: number; sfxEnabled: boolean; sfxVolume: number };
+type SfxName = "mineIron" | "mineCopper" | UnitKey | AlienKey | "alienImpact" | "alarm" | "baseDamage" | "baseCritical" | "defeat";
 
-const blankDamage: MachineDamage = { drills: 0, furnaces: 0, assemblers: 0, labs: 0, copperDrills: 0, copperFurnaces: 0, circuitAssemblers: 0, coreAssemblers: 0 };
-
-const initial: GameState = {
-  ore: 0, plates: 0, gears: 0, science: 0,
-  drills: 0, furnaces: 0, assemblers: 0, labs: 0,
-  clickLevel: 1, efficiency: 1,
-  copperOre: 0, copperPlates: 0, circuits: 0, cores: 0,
-  copperDrills: 0, copperFurnaces: 0, circuitAssemblers: 0, coreAssemblers: 0,
-  miningTech: 0, smeltingTech: 0, assemblyTech: 0, won: false,
-  baseHp: 1000, nestHp: 1000, wave: 0, completedWaves: 0, kills: 0, defenseWon: false, defenseLost: false,
-  damaged: blankDamage,
-};
-
-const fmt = (v: number) => new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(Math.floor(Math.max(0, v) * 10) / 10);
-const cost = (base: number, count: number, curve = 1.18) => Math.ceil(base * Math.pow(curve, count));
-const RESEARCH_PER_CORE = 4;
+const SAVE_KEY = "assembly-ascendant-save-v2";
+const LEGACY_SAVE_KEY = "assembly-ascendant-save";
 const BASE_MAX_HP = 1000;
-const NEST_MAX_HP = 1000;
-const NEST_SHIELD_WAVES = 3;
-const MAX_ENEMIES_PER_WAVE = 10;
-const FIRST_WAVE_DELAY = 45;
-const WAVE_INTERMISSION = 25;
+const NESTS_PER_REGION = 6;
+const OFFLINE_CAP_SECONDS = 24 * 60 * 60;
 const AUDIO_PREFS_KEY = "assembly-ascendant-audio";
-const DEFAULT_AUDIO_PREFS: AudioPreferences = { musicEnabled: true, musicVolume: 0.45, sfxEnabled: true, sfxVolume: 0.45 };
-const RECORDED_SFX: Partial<Record<SfxName, { paths: string[]; volume: number; rate: [number, number] }>> = {
-  mineIron: { paths: ["/audio/sfx/mine-iron-metal.wav"], volume: 0.48, rate: [0.92, 1] },
-  mineCopper: { paths: ["/audio/sfx/mine-copper-metal.wav"], volume: 0.38, rate: [1.02, 1.12] },
-  marine: { paths: ["/audio/sfx/marine-01.ogg", "/audio/sfx/marine-02.ogg", "/audio/sfx/marine-03.ogg"], volume: 0.24, rate: [0.96, 1.08] },
-  tank: { paths: ["/audio/sfx/tank-01.ogg", "/audio/sfx/tank-02.ogg"], volume: 0.34, rate: [0.9, 1.02] },
-  fighter: { paths: ["/audio/sfx/fighter-01.ogg", "/audio/sfx/fighter-02.ogg"], volume: 0.26, rate: [1.02, 1.12] },
-  crawler: { paths: ["/audio/sfx/crawler-01.ogg", "/audio/sfx/crawler-02.ogg", "/audio/sfx/crawler-03.ogg"], volume: 0.18, rate: [0.94, 1.12] },
-  spitter: { paths: ["/audio/sfx/spitter-01.ogg", "/audio/sfx/spitter-02.ogg", "/audio/sfx/spitter-03.ogg"], volume: 0.22, rate: [0.92, 1.08] },
-  brute: { paths: ["/audio/sfx/brute-attack.ogg"], volume: 0.26, rate: [0.84, 0.96] },
-  bruteRoar: { paths: ["/audio/sfx/brute-roar.wav"], volume: 0.3, rate: [0.86, 0.94] },
-  alarm: { paths: ["/audio/sfx/wave-alarm.wav"], volume: 0.21, rate: [1, 1] },
-  baseDamage: { paths: ["/audio/sfx/base-impact.ogg"], volume: 0.3, rate: [0.9, 1.04] },
-  baseCritical: { paths: ["/audio/sfx/base-critical.ogg"], volume: 0.38, rate: [0.86, 0.96] },
-  defeat: { paths: ["/audio/sfx/defeat.wav"], volume: 0.34, rate: [1, 1] },
+const DEFAULT_AUDIO_PREFS: AudioPreferences = { musicEnabled: true, musicVolume: 0.4, sfxEnabled: true, sfxVolume: 0.45 };
+const SFX: Record<SfxName, { paths: string[]; volume: number; rate: [number, number]; gap: number }> = {
+  mineIron: { paths: ["/audio/sfx/mine-iron-metal.wav"], volume: 0.48, rate: [0.92, 1], gap: 80 },
+  mineCopper: { paths: ["/audio/sfx/mine-copper-metal.wav"], volume: 0.38, rate: [1.02, 1.12], gap: 80 },
+  marine: { paths: ["/audio/sfx/marine-01.ogg", "/audio/sfx/marine-02.ogg", "/audio/sfx/marine-03.ogg"], volume: 0.24, rate: [0.96, 1.08], gap: 170 },
+  tank: { paths: ["/audio/sfx/tank-01.ogg", "/audio/sfx/tank-02.ogg"], volume: 0.34, rate: [0.9, 1.02], gap: 520 },
+  fighter: { paths: ["/audio/sfx/fighter-01.ogg", "/audio/sfx/fighter-02.ogg"], volume: 0.26, rate: [1.02, 1.12], gap: 420 },
+  crawler: { paths: ["/audio/sfx/crawler-01.ogg", "/audio/sfx/crawler-02.ogg", "/audio/sfx/crawler-03.ogg"], volume: 0.62, rate: [0.94, 1.12], gap: 520 },
+  spitter: { paths: ["/audio/sfx/spitter-01.ogg", "/audio/sfx/spitter-02.ogg", "/audio/sfx/spitter-03.ogg"], volume: 0.68, rate: [0.92, 1.08], gap: 680 },
+  brute: { paths: ["/audio/sfx/brute-attack.ogg"], volume: 0.76, rate: [0.84, 0.96], gap: 900 },
+  alienImpact: { paths: ["/audio/sfx/base-impact.ogg"], volume: 0.42, rate: [0.72, 0.88], gap: 260 },
+  alarm: { paths: ["/audio/sfx/wave-alarm.wav"], volume: 0.21, rate: [1, 1], gap: 3000 },
+  baseDamage: { paths: ["/audio/sfx/base-impact.ogg"], volume: 0.3, rate: [0.9, 1.04], gap: 500 },
+  baseCritical: { paths: ["/audio/sfx/base-critical.ogg"], volume: 0.38, rate: [0.86, 0.96], gap: 3000 },
+  defeat: { paths: ["/audio/sfx/defeat.wav"], volume: 0.34, rate: [1, 1], gap: 5000 },
 };
-const ASSET = {
-  ironOre: "/assets/iron-deposit.webp",
-  ironPlate: "/assets/iron-plate.webp",
-  copperOre: "/assets/copper-deposit.webp",
-  copperPlate: "/assets/copper-plate.webp",
-  gear: "/assets/gear.webp",
-  circuit: "/assets/circuit.webp",
-  core: "/assets/core.webp",
-  research: "/assets/research-lab.webp",
-} as const;
-const activeMachines = (s: GameState, key: MachineKey, count: number) => Math.max(0, count - (s.damaged?.[key] || 0));
+const blankMachines: MachineLevels = { ironDrills: 0, furnaces: 0, copperDrills: 0, circuitFabs: 0, coreFabs: 0 };
+const blankArmy: Army = { marine: 0, tank: 0, fighter: 0 };
+const blankDeployCooldowns: DeploymentCooldowns = { marine: 0, tank: 0, fighter: 0 };
+const blankTech: TechState = { landing: 0, bulk: 0, logistics: 0, autoCommand: 0, salvage: 0, strike: 0, telemetry: 0, bossAutonomy: 0, deepScan: 0 };
+
+const initialState = (): GameState => ({
+  version: 2, savedAt: Date.now(), iron: 0, steel: 0, copper: 0, circuits: 0, cores: 0, data: 0,
+  machines: { ...blankMachines }, army: { ...blankArmy }, autoTrain: false, deployCooldowns: { ...blankDeployCooldowns },
+  region: 1, nest: 1, nestsCleared: 0, nestHp: 420, nestMaxHp: 420, baseHp: BASE_MAX_HP,
+  retreats: 0, bossEngaged: true, ascensions: 0, tech: { ...blankTech },
+  lifetimeCrafted: 0, lifetimeKills: 0, lifetimeNests: 0,
+});
+
+const ASSET = { iron: "/assets/iron-deposit.webp", steel: "/assets/iron-plate.webp", copper: "/assets/copper-deposit.webp", circuits: "/assets/circuit.webp", cores: "/assets/core.webp", data: "/assets/research-lab.webp" } as const;
+
+const techDefinitions: TechDefinition[] = [
+  { key: "landing", branch: "industry", name: "Automated Landing", detail: "Begin each redeployment with an iron drill and furnace.", cost: 2 },
+  { key: "bulk", branch: "industry", name: "Batch Construction", detail: "Unlock x10 and MAX machine upgrades.", cost: 3 },
+  { key: "logistics", branch: "industry", name: "Logistics Director", detail: "All production lines operate 35% faster.", cost: 7 },
+  { key: "autoCommand", branch: "military", name: "Autonomous Command", detail: "Auto-deployment is available immediately after landing.", cost: 2 },
+  { key: "salvage", branch: "military", name: "Battlefield Salvage", detail: "Retreats preserve 85% of every deployed unit.", cost: 4 },
+  { key: "strike", branch: "military", name: "Focused Strike", detail: "Army damage against nests and bosses increases by 40%.", cost: 7 },
+  { key: "telemetry", branch: "expedition", name: "Remote Telemetry", detail: "Reports identify the exact reason a front has stalled.", cost: 2 },
+  { key: "bossAutonomy", branch: "expedition", name: "Boss Autonomy", detail: "Command may engage region bosses while you are away.", cost: 5 },
+  { key: "deepScan", branch: "expedition", name: "Deep-Space Scan", detail: "Nest rewards and archived data increase by 30%.", cost: 7 },
+];
+
+const unlocked = (s: GameState, target: "copper" | "circuits" | "tank" | "cores" | "fighter" | "autoTrain" | "prestige") => {
+  const progress = s.nestsCleared + s.ascensions * NESTS_PER_REGION;
+  if (target === "copper") return progress >= 1;
+  if (target === "circuits") return progress >= 2;
+  if (target === "tank") return progress >= 3;
+  if (target === "cores") return progress >= 4;
+  if (target === "fighter") return progress >= 6;
+  if (target === "autoTrain") return progress >= 1 || s.tech.autoCommand > 0;
+  return s.nestsCleared >= NESTS_PER_REGION;
+};
+
+const machineDefinitions: Array<{ key: MachineKey; name: string; detail: string; icon: string; currency: ResourceKey; baseCost: number; curve: number; unlock: (s: GameState) => boolean }> = [
+  { key: "ironDrills", name: "Iron Drill", detail: "+0.8 iron/s", icon: ASSET.iron, currency: "iron", baseCost: 12, curve: 1.17, unlock: () => true },
+  { key: "furnaces", name: "Steel Furnace", detail: "iron → +0.58 steel/s", icon: ASSET.steel, currency: "iron", baseCost: 22, curve: 1.18, unlock: () => true },
+  { key: "copperDrills", name: "Copper Drill", detail: "+0.65 copper/s", icon: ASSET.copper, currency: "steel", baseCost: 20, curve: 1.18, unlock: (s) => unlocked(s, "copper") },
+  { key: "circuitFabs", name: "Circuit Printer", detail: "copper → +0.36 circuit/s", icon: ASSET.circuits, currency: "steel", baseCost: 28, curve: 1.2, unlock: (s) => unlocked(s, "circuits") },
+  { key: "coreFabs", name: "Core Fabricator", detail: "steel + circuit → +0.08 core/s", icon: ASSET.cores, currency: "circuits", baseCost: 18, curve: 1.22, unlock: (s) => unlocked(s, "cores") },
+];
+const unitDefinitions: Array<{ key: UnitKey; name: string; role: string; image: string; cooldown: number; costs: Partial<Record<ResourceKey, number>>; unlock: (s: GameState) => boolean }> = [
+  { key: "marine", name: "Marine", role: "Rapid line infantry", image: "/units/marine.png", cooldown: 4, costs: { steel: 8 }, unlock: () => true },
+  { key: "tank", name: "Siege Tank", role: "Armored nest breaker", image: "/units/tank.png", cooldown: 8, costs: { steel: 18, circuits: 5 }, unlock: (s) => unlocked(s, "tank") },
+  { key: "fighter", name: "Strike Fighter", role: "High-speed boss damage", image: "/units/fighter.png", cooldown: 12, costs: { circuits: 10, cores: 2 }, unlock: (s) => unlocked(s, "fighter") },
+];
+
+const fmt = (value: number) => {
+  const v = Math.max(0, value);
+  if (v >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  return new Intl.NumberFormat("en", { maximumFractionDigits: 1 }).format(Math.floor(v * 10) / 10);
+};
+const nextUnlock = (s: GameState) => {
+  const p = s.nestsCleared + s.ascensions * NESTS_PER_REGION;
+  if (p < 1) return { name: "COPPER EXTRACTION", at: "Destroy Nest 1" };
+  if (p < 2) return { name: "CIRCUIT PRINTING", at: "Destroy Nest 2" };
+  if (p < 3) return { name: "SIEGE TANK", at: "Destroy Nest 3" };
+  if (p < 4) return { name: "CORE FABRICATION", at: "Destroy Nest 4" };
+  if (p < 6) return { name: "STRIKE FIGHTER", at: "Defeat the Region Boss" };
+  return { name: "ORBITAL REDEPLOYMENT", at: "Archive this expedition" };
+};
+const isBoss = (s: GameState) => s.nest === NESTS_PER_REGION;
+const nestStats = (cleared: number, nest: number) => ({ maxHp: Math.round(420 * Math.pow(1.42, cleared) * (nest === NESTS_PER_REGION ? 2.5 : 1)), boss: nest === NESTS_PER_REGION });
+const ratesFor = (s: GameState) => {
+  const boost = 1 + s.tech.logistics * 0.35;
+  return { iron: s.machines.ironDrills * 0.8 * boost, steel: s.machines.furnaces * 0.58 * boost, copper: s.machines.copperDrills * 0.65 * boost, circuits: s.machines.circuitFabs * 0.36 * boost, cores: s.machines.coreFabs * 0.08 * boost };
+};
+const armyStats = (s: GameState) => {
+  const damage = (s.army.marine * 2.2 + s.army.tank * 8.5 + s.army.fighter * 15) * (1 + s.tech.strike * 0.4);
+  const armor = s.army.marine * 2.5 + s.army.tank * 13 + s.army.fighter * 7;
+  const threat = 10 + s.nestsCleared * 5.2 + (isBoss(s) ? 24 + s.region * 7 : 0);
+  return { damage, armor, threat, total: s.army.marine + s.army.tank + s.army.fighter };
+};
+const cloneState = (s: GameState): GameState => ({ ...s, machines: { ...s.machines }, army: { ...s.army }, deployCooldowns: { ...s.deployCooldowns }, tech: { ...s.tech } });
+const canAfford = (s: GameState, costs: Partial<Record<ResourceKey, number>>) => Object.entries(costs).every(([key, amount]) => s[key as ResourceKey] >= (amount ?? 0));
+const spendCosts = (s: GameState, costs: Partial<Record<ResourceKey, number>>) => { for (const [key, amount] of Object.entries(costs)) s[key as ResourceKey] -= amount ?? 0; };
+const trainOne = (s: GameState, key: UnitKey) => {
+  const unit = unitDefinitions.find((candidate) => candidate.key === key);
+  if (!unit || !unit.unlock(s) || s.deployCooldowns[key] > 0 || !canAfford(s, unit.costs)) return false;
+  spendCosts(s, unit.costs); s.army[key] += 1; s.deployCooldowns[key] = unit.cooldown; return true;
+};
+
+const productionStep = (s: GameState, seconds: number) => {
+  for (const key of ["marine", "tank", "fighter"] as UnitKey[]) s.deployCooldowns[key] = Math.max(0, s.deployCooldowns[key] - seconds);
+  const rates = ratesFor(s);
+  s.iron += rates.iron * seconds;
+  const steelMade = Math.min(s.iron, rates.steel * seconds); s.iron -= steelMade; s.steel += steelMade;
+  if (unlocked(s, "copper")) s.copper += rates.copper * seconds;
+  if (unlocked(s, "circuits")) { const made = Math.min(s.copper, rates.circuits * seconds); s.copper -= made; s.circuits += made; }
+  if (unlocked(s, "cores")) { const made = Math.min(rates.cores * seconds, s.steel / 2, s.circuits / 2); s.steel -= made * 2; s.circuits -= made * 2; s.cores += made; }
+  s.lifetimeCrafted += steelMade;
+};
+const autoTrainStep = (s: GameState, attempts: number) => {
+  if (!s.autoTrain || !unlocked(s, "autoTrain")) return;
+  const weights: Record<UnitKey, number> = unlocked(s, "fighter")
+    ? { marine: 2, tank: 1, fighter: 1 }
+    : unlocked(s, "tank")
+      ? { marine: 2, tank: 1, fighter: 0 }
+      : { marine: 1, tank: 0, fighter: 0 };
+  for (let i = 0; i < Math.min(60, attempts); i++) {
+    const candidate = unitDefinitions
+      .filter((unit) => weights[unit.key] > 0 && unit.unlock(s) && s.deployCooldowns[unit.key] <= 0 && canAfford(s, unit.costs))
+      .sort((a, b) => (s.army[a.key] / weights[a.key]) - (s.army[b.key] / weights[b.key]))[0];
+    if (!candidate || !trainOne(s, candidate.key)) break;
+  }
+};
+const clearNest = (s: GameState) => {
+  const boss = isBoss(s);
+  s.data += Math.ceil((boss ? 5 : 1) * (1 + s.tech.deepScan * 0.3));
+  s.lifetimeNests += 1; s.lifetimeKills += Math.round(12 + s.nestsCleared * 3.5); s.nestsCleared += 1;
+  s.steel += 16 + s.region * 5; if (unlocked(s, "circuits")) s.circuits += 4 + s.region;
+  if (boss) { s.region += 1; s.nest = 1; } else s.nest += 1;
+  const next = nestStats(s.nestsCleared, s.nest); s.nestMaxHp = next.maxHp; s.nestHp = next.maxHp; s.bossEngaged = !next.boss || s.tech.bossAutonomy > 0;
+};
+const combatStep = (s: GameState, seconds: number) => {
+  const stats = armyStats(s);
+  if (!stats.total || (isBoss(s) && !s.bossEngaged)) return;
+  const required = stats.total * 0.006 * seconds; const supply = Math.min(s.steel, required); s.steel -= supply;
+  s.nestHp -= stats.damage * (supply + 0.001 >= required ? 1 : 0.38) * seconds;
+  if (stats.armor < stats.threat) s.baseHp -= (stats.threat - stats.armor) * 0.07 * seconds;
+  else s.baseHp = Math.min(BASE_MAX_HP, s.baseHp + 0.35 * seconds);
+  if (s.baseHp <= 0) {
+    const keep = s.tech.salvage ? 0.85 : 0.65;
+    s.army.marine = Math.floor(s.army.marine * keep); s.army.tank = Math.floor(s.army.tank * keep); s.army.fighter = Math.floor(s.army.fighter * keep);
+    s.baseHp = 520; s.nestHp = s.nestMaxHp; s.retreats += 1;
+  } else if (s.nestHp <= 0) clearNest(s);
+};
+const simulate = (source: GameState, seconds: number, offline = false) => {
+  const s = cloneState(source); const step = offline ? 5 : Math.min(1, seconds); let remaining = seconds;
+  while (remaining > 0.001) { const dt = Math.min(step, remaining); productionStep(s, dt); autoTrainStep(s, Math.max(1, Math.floor(dt / 5))); if (offline) combatStep(s, dt); remaining -= dt; }
+  s.savedAt = Date.now(); return s;
+};
+const migrateState = (value: unknown): GameState => {
+  const base = initialState(); if (!value || typeof value !== "object") return base;
+  const parsed = value as Partial<GameState> & Record<string, unknown>;
+  if (parsed.version === 2) return { ...base, ...parsed, machines: { ...blankMachines, ...(parsed.machines || {}) }, army: { ...blankArmy, ...(parsed.army || {}) }, deployCooldowns: { ...blankDeployCooldowns, ...(parsed.deployCooldowns || {}) }, tech: { ...blankTech, ...(parsed.tech || {}) } };
+  return { ...base, iron: Number(parsed.ore || 0), steel: Number(parsed.plates || 0), copper: Number(parsed.copperOre || 0), circuits: Number(parsed.circuits || 0), cores: Number(parsed.cores || 0), machines: { ironDrills: Number(parsed.drills || 0), furnaces: Number(parsed.furnaces || 0), copperDrills: Number(parsed.copperDrills || 0), circuitFabs: Number(parsed.circuitAssemblers || 0), coreFabs: Number(parsed.coreAssemblers || 0) } };
+};
+
+const humanBattleStats: Record<UnitKey, { hp: number; attack: number; range: number; speed: number }> = {
+  marine: { hp: 78, attack: 13, range: 10, speed: 6.4 },
+  tank: { hp: 220, attack: 34, range: 16, speed: 2.8 },
+  fighter: { hp: 92, attack: 30, range: 18, speed: 8.5 },
+};
+const siegeLineFor = (kind: UnitKey, formationSlot = 0, depth = 0.5) => {
+  const base = kind === "fighter" ? 76 : kind === "tank" ? 79 : 82;
+  return base - formationSlot * 4.5 - depth;
+};
+
+const makeHumanBattleUnit = (kind: UnitKey, id: number, ordinal: number, squadSize = 1): BattleUnit => {
+  const stats = humanBattleStats[kind];
+  const hp = stats.hp * Math.sqrt(squadSize);
+  return { id, side: "human", kind, x: 9 + (ordinal % 3) * 1.2, depth: 0.15 + ((ordinal * 37) % 70) / 100, hp, maxHp: hp, attack: stats.attack * squadSize, range: stats.range, speed: stats.speed, cooldown: 0, squadSize, formationSlot: ordinal % 3, moving: true, attackFx: 0, hitFx: 0 };
+};
 
 export default function Home() {
-  const [g, setG] = useState<GameState>(initial);
-  const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState<ViewMode>("factory");
-  const [mineMode, setMineMode] = useState<OreMode>("iron");
-  const [pulse, setPulse] = useState(0);
-  const [toast, setToast] = useState("Select a deposit and begin extraction.");
-  const [battleUnits, setBattleUnits] = useState<BattleUnit[]>([]);
-  const [attackEffects, setAttackEffects] = useState<AttackEffect[]>([]);
-  const [waveCountdown, setWaveCountdown] = useState(FIRST_WAVE_DELAY);
+  const [g, setG] = useState<GameState>(initialState);
+  const [loaded, setLoaded] = useState(false); const [started, setStarted] = useState(false);
+  const [view, setView] = useState<ViewMode>("factory"); const [report, setReport] = useState<OfflineReport | null>(null);
+  const [toast, setToast] = useState("Planetfall systems standing by.");
   const [audioPrefs, setAudioPrefs] = useState<AudioPreferences>(DEFAULT_AUDIO_PREFS);
   const [audioPrefsLoaded, setAudioPrefsLoaded] = useState(false);
-  const [audioUnlocked, setAudioUnlocked] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [hasSave, setHasSave] = useState(false);
-  const [expeditionStarted, setExpeditionStarted] = useState(false);
-  const [introReady, setIntroReady] = useState(false);
-  const [introLeaving, setIntroLeaving] = useState(false);
-  const last = useRef(Date.now());
+  const [battleUnits, setBattleUnits] = useState<BattleUnit[]>([]);
+  const [attackEffects, setAttackEffects] = useState<AttackEffect[]>([]);
+  const [waveCountdown, setWaveCountdown] = useState(8);
+  const [wave, setWave] = useState(0);
+  const audioRef = useRef<HTMLAudioElement>(null); const gRef = useRef(g);
   const battleUnitsRef = useRef<BattleUnit[]>([]);
-  const gRef = useRef(g);
+  const waveActiveRef = useRef(false);
+  const waveRef = useRef(0);
   const unitId = useRef(1);
   const effectId = useRef(1);
-  const musicRef = useRef<HTMLAudioElement>(null);
+  const formationsInitializedRef = useRef(false);
+  const armySignature = `squads:${g.army.marine}:${g.army.tank}:${g.army.fighter}`;
   const audioPrefsRef = useRef(audioPrefs);
-  const sfxContextRef = useRef<AudioContext | null>(null);
-  const sfxBuffersRef = useRef(new Map<string, Promise<AudioBuffer>>());
-  const combatSfxLastRef = useRef<Record<string, number>>({});
-  const endSfxPlayedRef = useRef<"victory" | "defeat" | null>(null);
-  const waveActiveRef = useRef(false);
+  const sfxLastRef = useRef<Partial<Record<SfxName, number>>>({});
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("assembly-ascendant-save");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        setG({ ...initial, ...parsed, damaged: { ...blankDamage, ...(parsed.damaged || {}) } });
-        setHasSave(true);
-      }
-    } catch {}
-    setLoaded(true);
+  const playSfx = useCallback((name: SfxName) => {
+    const prefs = audioPrefsRef.current;
+    if (!prefs.sfxEnabled) return;
+    const config = SFX[name]; const now = performance.now();
+    if (now - (sfxLastRef.current[name] || 0) < config.gap) return;
+    sfxLastRef.current[name] = now;
+    const sound = new Audio(config.paths[Math.floor(Math.random() * config.paths.length)]);
+    sound.volume = Math.min(1, config.volume * prefs.sfxVolume);
+    sound.playbackRate = config.rate[0] + Math.random() * (config.rate[1] - config.rate[0]);
+    void sound.play().catch(() => {});
   }, []);
+
+  const spawnEnemyWave = useCallback(() => {
+    const state = gRef.current;
+    if (isBoss(state) && !state.bossEngaged) return;
+    const nextWave = waveRef.current + 1;
+    const scale = 1 + state.nestsCleared * 0.16 + (nextWave - 1) * 0.1;
+    const count = Math.min(10, 2 + Math.floor(nextWave * 0.8) + Math.floor(state.region / 2));
+    const enemies: BattleUnit[] = Array.from({ length: count }).map((_, i) => {
+      const brute = nextWave >= 3 && i === count - 1 && nextWave % 2 === 1;
+      const spitter = !brute && nextWave >= 2 && i % 4 === 3;
+      const kind: AlienKey = brute ? "brute" : spitter ? "spitter" : "crawler";
+      const hp = (brute ? 280 : spitter ? 62 : 90) * scale;
+      return { id: unitId.current++, side: "alien", kind, x: 90 - (i % 5) * 1.2, depth: 0.12 + ((i * 29) % 75) / 100, hp, maxHp: hp, attack: (brute ? 30 : spitter ? 15 : 18) * scale, range: spitter ? 10 : brute ? 3.4 : 2.7, speed: brute ? 2.25 : spitter ? 3.1 : 4.4, cooldown: i * 0.08, moving: true, attackFx: 0, hitFx: 0 };
+    });
+    waveActiveRef.current = true;
+    const next = [...battleUnitsRef.current.filter((unit) => unit.side === "human"), ...enemies];
+    battleUnitsRef.current = next; waveRef.current = nextWave; setBattleUnits(next); setWave(nextWave);
+    playSfx("alarm");
+    if (enemies.some((enemy) => enemy.kind === "brute")) playSfx("brute");
+  }, [playSfx]);
 
   useEffect(() => { gRef.current = g; }, [g]);
   useEffect(() => { battleUnitsRef.current = battleUnits; }, [battleUnits]);
-
+  useEffect(() => { waveRef.current = wave; }, [wave]);
   useEffect(() => {
-    if (!loaded || expeditionStarted) return;
-    const reveal = window.setTimeout(() => setIntroReady(true), 4200);
-    return () => window.clearTimeout(reveal);
-  }, [loaded, expeditionStarted]);
-
-  useEffect(() => {
-    const loadAudioPreferences = window.setTimeout(() => {
-      try {
-        const saved = localStorage.getItem(AUDIO_PREFS_KEY);
-        if (saved) setAudioPrefs({ ...DEFAULT_AUDIO_PREFS, ...JSON.parse(saved) });
+    const hydrate = window.setTimeout(() => {
+      let saved: string | null = null; try { saved = localStorage.getItem(SAVE_KEY) || localStorage.getItem(LEGACY_SAVE_KEY); } catch {}
+      try { const savedAudio = localStorage.getItem(AUDIO_PREFS_KEY); if (savedAudio) setAudioPrefs({ ...DEFAULT_AUDIO_PREFS, ...JSON.parse(savedAudio) }); } catch {}
+      if (saved) try {
+        const restored = migrateState(JSON.parse(saved)); const away = Math.min(OFFLINE_CAP_SECONDS, Math.max(0, (Date.now() - restored.savedAt) / 1000));
+        const advanced = away >= 10 ? simulate(restored, away, true) : restored;
+        if (away >= 10) { const stats = armyStats(advanced); setReport({ seconds: away, steel: advanced.steel - restored.steel, circuits: advanced.circuits - restored.circuits, cores: advanced.cores - restored.cores, nests: advanced.nestsCleared - restored.nestsCleared, status: stats.total === 0 ? "Expedition waiting for deployed units." : advanced.nestHp < advanced.nestMaxHp ? "Frontline is advancing." : "Frontline is waiting for stronger supply." }); }
+        setG(advanced);
       } catch {}
       setAudioPrefsLoaded(true);
+      setLoaded(true);
     }, 0);
-    return () => window.clearTimeout(loadAudioPreferences);
+    return () => window.clearTimeout(hydrate);
   }, []);
-
+  useEffect(() => { if (!loaded || !started) return; const timer = window.setInterval(() => setG((current) => simulate(current, 1)), 1000); return () => window.clearInterval(timer); }, [loaded, started]);
+  useEffect(() => { if (!loaded) return; const timer = window.setInterval(() => { try { localStorage.setItem(SAVE_KEY, JSON.stringify({ ...gRef.current, savedAt: Date.now() })); } catch {} }, 1500); return () => window.clearInterval(timer); }, [loaded]);
   useEffect(() => {
     audioPrefsRef.current = audioPrefs;
-    if (audioPrefsLoaded) {
-      try { localStorage.setItem(AUDIO_PREFS_KEY, JSON.stringify(audioPrefs)); } catch {}
-    }
-    const music = musicRef.current;
-    if (!music) return;
-    music.volume = audioPrefs.musicVolume;
-    if (!audioPrefs.musicEnabled) music.pause();
-    else if (audioUnlocked) void music.play().catch(() => {});
-  }, [audioPrefs, audioPrefsLoaded, audioUnlocked]);
+    if (audioPrefsLoaded) try { localStorage.setItem(AUDIO_PREFS_KEY, JSON.stringify(audioPrefs)); } catch {}
+    const audio = audioRef.current; if (!audio) return;
+    audio.volume = audioPrefs.musicVolume;
+    if (!audioPrefs.musicEnabled) audio.pause(); else if (started) void audio.play().catch(() => {});
+  }, [audioPrefs, audioPrefsLoaded, started]);
 
+  // Online combat keeps the original visible unit flow. Aggregate combat is only used while offline.
   useEffect(() => {
-    const music = musicRef.current;
-    if (!music) return;
-    music.pause();
-    music.load();
-    music.volume = audioPrefsRef.current.musicVolume;
-    if (audioUnlocked && audioPrefsRef.current.musicEnabled) void music.play().catch(() => {});
-  }, [expeditionStarted, audioUnlocked]);
-
-  useEffect(() => {
-    const unlockAudio = () => {
-      setAudioUnlocked(true);
-      const music = musicRef.current;
-      if (music && audioPrefsRef.current.musicEnabled) {
-        music.volume = audioPrefsRef.current.musicVolume;
-        void music.play().catch(() => {});
-      }
-    };
-    document.addEventListener("pointerdown", unlockAudio, { once: true });
-    return () => document.removeEventListener("pointerdown", unlockAudio);
-  }, []);
-
-  useEffect(() => {
-    const handleVisibility = () => {
-      const music = musicRef.current;
-      if (!music) return;
-      if (document.hidden) music.pause();
-      else if (audioUnlocked && audioPrefsRef.current.musicEnabled) void music.play().catch(() => {});
-    };
-    document.addEventListener("visibilitychange", handleVisibility);
-    return () => document.removeEventListener("visibilitychange", handleVisibility);
-  }, [audioUnlocked]);
-
-  useEffect(() => {
-    if (!settingsOpen) return;
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setSettingsOpen(false); };
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [settingsOpen]);
-
-  useEffect(() => () => { void sfxContextRef.current?.close(); }, []);
-
-  const playSfx = (name: SfxName) => {
-    if (!audioPrefsRef.current.sfxEnabled) return;
-    const context = sfxContextRef.current ?? new AudioContext();
-    sfxContextRef.current = context;
-    if (context.state === "suspended") void context.resume();
-    const now = context.currentTime;
-    const volume = audioPrefsRef.current.sfxVolume;
-    const recorded = RECORDED_SFX[name];
-    if (recorded) {
-      const playRecording = (path: string, level: number, rate: [number, number], delay = 0) => {
-        let pendingBuffer = sfxBuffersRef.current.get(path);
-        if (!pendingBuffer) {
-          pendingBuffer = fetch(path).then((response) => {
-            if (!response.ok) throw new Error(`Unable to load sound effect: ${path}`);
-            return response.arrayBuffer();
-          }).then((data) => context.decodeAudioData(data));
-          sfxBuffersRef.current.set(path, pendingBuffer);
+    if (!started) return;
+    setBattleUnits((current) => {
+      const next = [...current];
+      for (const kind of ["marine", "tank", "fighter"] as UnitKey[]) {
+        const existing = next.filter((unit) => unit.side === "human" && unit.kind === kind);
+        const represented = existing.reduce((total, unit) => total + (unit.squadSize || 1), 0);
+        if (!formationsInitializedRef.current && represented === 0 && g.army[kind] > 0) {
+          const visible = g.army[kind] > 3 ? 1 : g.army[kind];
+          const squadSize = g.army[kind] > 3 ? g.army[kind] : 1;
+          for (let i = 0; i < visible; i++) next.push(makeHumanBattleUnit(kind, unitId.current++, i, squadSize));
+        } else if (represented < g.army[kind]) {
+          for (let i = represented; i < g.army[kind]; i++) next.push(makeHumanBattleUnit(kind, unitId.current++, i, 1));
         }
-        void pendingBuffer.then((buffer) => {
-          if (!audioPrefsRef.current.sfxEnabled || context.state === "closed") return;
-          const source = context.createBufferSource();
-          const gain = context.createGain();
-          source.buffer = buffer;
-          source.playbackRate.value = rate[0] + Math.random() * (rate[1] - rate[0]);
-          gain.gain.value = level * audioPrefsRef.current.sfxVolume;
-          source.connect(gain).connect(context.destination);
-          source.start(context.currentTime + delay);
-        }).catch(() => {});
-      };
-      const path = recorded.paths[Math.floor(Math.random() * recorded.paths.length)];
-      playRecording(path, recorded.volume, recorded.rate);
-      if (name === "tank") {
-        playRecording("/audio/sfx/base-critical.ogg", 0.3, [0.78, 0.88], 0.035);
       }
-      return;
-    }
-    const tone = (frequency: number, delay: number, duration: number, level: number, type: OscillatorType = "sine", endFrequency?: number) => {
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      const start = now + delay;
-      oscillator.type = type;
-      oscillator.frequency.setValueAtTime(frequency, start);
-      if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(endFrequency, start + duration);
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, level * volume), start + Math.min(0.012, duration * 0.2));
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-      oscillator.connect(gain).connect(context.destination);
-      oscillator.start(start);
-      oscillator.stop(start + duration + 0.02);
-    };
-    const noiseHit = (delay: number, duration: number, level: number, cutoff: number) => {
-      const length = Math.max(1, Math.floor(context.sampleRate * duration));
-      const buffer = context.createBuffer(1, length, context.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < length; i += 1) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2);
-      const source = context.createBufferSource();
-      const filter = context.createBiquadFilter();
-      const gain = context.createGain();
-      const start = now + delay;
-      source.buffer = buffer;
-      filter.type = "lowpass";
-      filter.frequency.value = cutoff;
-      gain.gain.setValueAtTime(level * volume, start);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
-      source.connect(filter).connect(gain).connect(context.destination);
-      source.start(start);
-    };
-
-    if (name === "ui") tone(720, 0, 0.055, 0.025, "sine", 430);
-    if (name === "purchase") {
-      noiseHit(0, 0.055, 0.035, 1800);
-      tone(196, 0, 0.10, 0.05, "triangle", 155);
-      tone(392, 0.065, 0.13, 0.045, "sine");
-      tone(587.3, 0.13, 0.18, 0.04, "sine");
-    }
-    if (name === "reject") {
-      tone(155, 0, 0.16, 0.065, "sawtooth", 92);
-      tone(116.5, 0.075, 0.18, 0.05, "square", 73);
-    }
-    if (name === "research") {
-      [440, 554.4, 659.3, 880].forEach((frequency, index) => tone(frequency, index * 0.07, 0.28, 0.045 - index * 0.004, index === 3 ? "sine" : "triangle"));
-      tone(1760, 0.25, 0.42, 0.022, "sine", 1320);
-    }
-    if (name === "victory") {
-      [293.7, 370, 440, 587.3, 740].forEach((frequency, index) => tone(frequency, index * 0.105, 0.62, 0.055 - index * 0.004, index < 2 ? "triangle" : "sine"));
-      tone(146.8, 0, 1.15, 0.055, "triangle", 220);
-    }
-  };
-
-  const playInterfaceSound = (target: EventTarget | null) => {
-    if (!(target instanceof Element)) return;
-    const button = target.closest("button");
-    if (!button || button.disabled || button.matches(".asteroid,.shop-row,.upgrade-card,.tech-card")) return;
-    playSfx("ui");
-  };
-
-  const updateAudioPref = <K extends keyof AudioPreferences>(key: K, value: AudioPreferences[K]) => {
-    setAudioPrefs((current) => ({ ...current, [key]: value }));
-  };
-
-  const mult = useMemo(() => ({
-    mining: (g.efficiency || 1) * (1 + g.miningTech * 0.25),
-    smelting: (g.efficiency || 1) * (1 + g.smeltingTech * 0.25),
-    assembly: (g.efficiency || 1) * (1 + g.assemblyTech * 0.25),
-  }), [g.efficiency, g.miningTech, g.smeltingTech, g.assemblyTech]);
-
-  const rates = useMemo(() => ({
-    ironOre: activeMachines(g, "drills", g.drills) * 0.8 * mult.mining,
-    copperOre: activeMachines(g, "copperDrills", g.copperDrills) * 0.65 * mult.mining,
-    ironPlate: activeMachines(g, "furnaces", g.furnaces) * 0.6 * mult.smelting,
-    copperPlate: activeMachines(g, "copperFurnaces", g.copperFurnaces) * 0.5 * mult.smelting,
-    gear: activeMachines(g, "assemblers", g.assemblers) * 0.28 * mult.assembly,
-    circuit: activeMachines(g, "circuitAssemblers", g.circuitAssemblers) * 0.32 * mult.assembly,
-    core: activeMachines(g, "coreAssemblers", g.coreAssemblers) * 0.12 * mult.assembly,
-    science: activeMachines(g, "labs", g.labs) * 0.1 * mult.assembly,
-  }), [g, mult]);
-
-  const flows = useMemo(() => {
-    const ironSmelt = Math.min(g.ore + rates.ironOre, rates.ironPlate);
-    const copperSmelt = Math.min(g.copperOre + rates.copperOre, rates.copperPlate);
-    let ironPlatePool = g.plates + ironSmelt;
-    const gear = Math.min(ironPlatePool / 2, rates.gear);
-    ironPlatePool -= gear * 2;
-    const circuit = Math.min(ironPlatePool, g.copperPlates + copperSmelt, rates.circuit);
-    const core = Math.min((g.gears + gear) / 2, (g.circuits + circuit) / 2, rates.core);
-    const coreForResearch = Math.min(g.cores + core, rates.science / RESEARCH_PER_CORE);
-    const science = coreForResearch * RESEARCH_PER_CORE;
-    return {
-      ironOre: { produced: rates.ironOre, consumed: ironSmelt },
-      ironPlate: { produced: ironSmelt, consumed: gear * 2 + circuit },
-      copperOre: { produced: rates.copperOre, consumed: copperSmelt },
-      copperPlate: { produced: copperSmelt, consumed: circuit },
-      gear: { produced: gear, consumed: core * 2 },
-      circuit: { produced: circuit, consumed: core * 2 },
-      core: { produced: core, consumed: coreForResearch },
-      science: { produced: science, consumed: 0 },
-    };
-  }, [g, rates]);
+      formationsInitializedRef.current = true;
+      battleUnitsRef.current = next;
+      return next;
+    });
+  }, [armySignature, started]);
 
   useEffect(() => {
-    if (!loaded || !expeditionStarted) return;
-    const id = window.setInterval(() => {
-      const now = Date.now();
-      const dt = Math.min(1, (now - last.current) / 1000);
-      last.current = now;
-      setG((s) => {
-        if (s.defenseLost || s.defenseWon) return s;
-        const miningM = (s.efficiency || 1) * (1 + s.miningTech * 0.25);
-        const smeltM = (s.efficiency || 1) * (1 + s.smeltingTech * 0.25);
-        const assemblyM = (s.efficiency || 1) * (1 + s.assemblyTech * 0.25);
-
-        const ironOreIn = s.ore + activeMachines(s, "drills", s.drills) * 0.8 * miningM * dt;
-        const copperOreIn = s.copperOre + activeMachines(s, "copperDrills", s.copperDrills) * 0.65 * miningM * dt;
-        const ironSmelt = Math.min(ironOreIn, activeMachines(s, "furnaces", s.furnaces) * 0.6 * smeltM * dt);
-        const copperSmelt = Math.min(copperOreIn, activeMachines(s, "copperFurnaces", s.copperFurnaces) * 0.5 * smeltM * dt);
-        let ironPlatePool = s.plates + ironSmelt;
-        let copperPlatePool = s.copperPlates + copperSmelt;
-
-        const gearMade = Math.min(ironPlatePool / 2, activeMachines(s, "assemblers", s.assemblers) * 0.28 * assemblyM * dt);
-        ironPlatePool -= gearMade * 2;
-        const circuitMade = Math.min(ironPlatePool, copperPlatePool, activeMachines(s, "circuitAssemblers", s.circuitAssemblers) * 0.32 * assemblyM * dt);
-        ironPlatePool -= circuitMade;
-        copperPlatePool -= circuitMade;
-
-        let gearPool = s.gears + gearMade;
-        let circuitPool = s.circuits + circuitMade;
-        const coreMade = Math.min(gearPool / 2, circuitPool / 2, activeMachines(s, "coreAssemblers", s.coreAssemblers) * 0.12 * assemblyM * dt);
-        gearPool -= coreMade * 2;
-        circuitPool -= coreMade * 2;
-        const corePool = s.cores + coreMade;
-        const researchCapacity = activeMachines(s, "labs", s.labs) * 0.1 * assemblyM * dt;
-        const coreUsedForResearch = Math.min(corePool, researchCapacity / RESEARCH_PER_CORE);
-        const researchMade = coreUsedForResearch * RESEARCH_PER_CORE;
-
-        return {
-          ...s,
-          ore: ironOreIn - ironSmelt,
-          copperOre: copperOreIn - copperSmelt,
-          plates: ironPlatePool,
-          copperPlates: copperPlatePool,
-          gears: gearPool,
-          circuits: circuitPool,
-          cores: corePool - coreUsedForResearch,
-          science: s.science + researchMade,
-        };
-      });
-    }, 100);
-    return () => window.clearInterval(id);
-  }, [loaded, expeditionStarted]);
-
-  useEffect(() => {
-    if (!loaded || !expeditionStarted) return;
-    const id = window.setInterval(() => localStorage.setItem("assembly-ascendant-save", JSON.stringify(g)), 1200);
-    return () => window.clearInterval(id);
-  }, [g, loaded, expeditionStarted]);
-
-  useEffect(() => {
-    if (!loaded || !expeditionStarted) return;
-    const id = window.setInterval(() => {
+    if (!started) return;
+    const timer = window.setInterval(() => {
       const state = gRef.current;
-      if (state.defenseWon || state.defenseLost) return;
-      if (state.wave === 0 && state.assemblers === 0) return;
+      if (isBoss(state) && !state.bossEngaged) return;
+      if (!battleUnitsRef.current.some((unit) => unit.side === "human")) return;
       if (waveActiveRef.current || battleUnitsRef.current.some((unit) => unit.side === "alien")) return;
-      setWaveCountdown((n) => {
-        if (n === 11) playSfx("alarm");
-        if (n > 1) return n - 1;
-        spawnWave();
-        return WAVE_INTERMISSION;
+      setWaveCountdown((countdown) => {
+        if (countdown > 1) return countdown - 1;
+        spawnEnemyWave();
+        return 18;
       });
     }, 1000);
-    return () => window.clearInterval(id);
-  }, [loaded, expeditionStarted]);
+    return () => window.clearInterval(timer);
+  }, [spawnEnemyWave, started]);
 
   useEffect(() => {
-    if (!loaded || !expeditionStarted) return;
-    const id = window.setInterval(() => {
+    if (!started) return;
+    const timer = window.setInterval(() => {
+      if (!battleUnitsRef.current.length) return;
       const state = gRef.current;
-      if (state.defenseWon || state.defenseLost || battleUnitsRef.current.length === 0) return;
-
       const dt = 0.1;
-      const units = battleUnitsRef.current.map((u) => ({
-        ...u,
-        cooldown: Math.max(0, u.cooldown - dt),
-        attackFx: Math.max(0, u.attackFx - 1),
-        hitFx: Math.max(0, u.hitFx - 1),
-        moving: false,
-      }));
+      const units = battleUnitsRef.current.map((unit) => ({ ...unit, cooldown: Math.max(0, unit.cooldown - dt), attackFx: Math.max(0, unit.attackFx - 1), hitFx: Math.max(0, unit.hitFx - 1), moving: false }));
+      const effects: AttackEffect[] = [];
+      const attackSounds = new Set<SfxName>();
       const breached = new Set<number>();
-      const attackSounds = new Set<HumanUnit | AlienUnit>();
-      const newEffects: AttackEffect[] = [];
-      let baseDamage = 0;
+      const mergedAway = new Set<number>();
+      const deadHumans: Partial<Record<UnitKey, number>> = {};
       let nestDamage = 0;
+      let baseDamage = 0;
 
-      const visualY = (kind: HumanUnit | AlienUnit, depth: number) => kind === "fighter" ? 58 - depth * 11 : 78 - depth * 11;
-      const fireAt = (unit: BattleUnit, toX: number, toY: number) => {
+      for (const kind of ["marine", "tank", "fighter"] as UnitKey[]) {
+        const formation = units.filter((unit) => unit.side === "human" && unit.kind === kind && unit.hp > 0).sort((a, b) => b.x - a.x);
+        const represented = formation.reduce((total, unit) => total + (unit.squadSize || 1), 0);
+        if (represented < 4) continue;
+        for (let index = 1; index < formation.length; index++) {
+          const reinforcement = formation[index];
+          const front = formation.slice(0, index).sort((a, b) => Math.hypot(a.x - reinforcement.x, (a.depth - reinforcement.depth) * 38) - Math.hypot(b.x - reinforcement.x, (b.depth - reinforcement.depth) * 38))[0];
+          if (!front || Math.hypot(front.x - reinforcement.x, (front.depth - reinforcement.depth) * 38) > 3.8) continue;
+          const newSize = (front.squadSize || 1) + (reinforcement.squadSize || 1);
+          const healthRatio = ((front.hp / front.maxHp) * (front.squadSize || 1) + (reinforcement.hp / reinforcement.maxHp) * (reinforcement.squadSize || 1)) / newSize;
+          front.squadSize = newSize; front.maxHp = humanBattleStats[kind].hp * Math.sqrt(newSize); front.hp = front.maxHp * healthRatio; front.attack = humanBattleStats[kind].attack * newSize;
+          reinforcement.hp = 0; mergedAway.add(reinforcement.id); break;
+        }
+      }
+
+      const visualY = (kind: UnitKey | AlienKey, depth: number) => kind === "fighter" ? 58 - depth * 11 : 78 - depth * 11;
+      const fireAt = (unit: BattleUnit, x: number, y: number) => {
         unit.attackFx = 3;
-        newEffects.push({
-          id: effectId.current++, side: unit.side, kind: unit.kind,
-          fromX: unit.x + (unit.side === "human" ? 2.6 : -2.6), fromY: visualY(unit.kind, unit.depth),
-          toX, toY, life: unit.kind === "spitter" || unit.kind === "fighter" ? 4 : 3,
-        });
+        attackSounds.add(unit.kind);
+        if (unit.side === "alien") attackSounds.add("alienImpact");
+        effects.push({ id: effectId.current++, side: unit.side, kind: unit.kind, fromX: unit.x + (unit.side === "human" ? 2.6 : -2.6), fromY: visualY(unit.kind, unit.depth), toX: x, toY: y, life: unit.kind === "spitter" || unit.kind === "fighter" ? 4 : 3 });
       };
 
       for (const unit of units) {
         if (unit.hp <= 0) continue;
-        if (unit.side === "human" && unit.x >= 92) {
-          unit.targetId = undefined;
-          if (unit.cooldown <= 0) {
-            if (gRef.current.wave >= NEST_SHIELD_WAVES) nestDamage += unit.attack;
-            attackSounds.add(unit.kind);
-            fireAt(unit, 96, 66);
-            unit.cooldown = 0.9;
+        const aliensAlive = units.some((candidate) => candidate.side === "alien" && candidate.hp > 0);
+        const siegeLine = unit.side === "human" ? siegeLineFor(unit.kind as UnitKey, unit.formationSlot || 0, unit.depth) : 93;
+        if (unit.side === "human") {
+          const sameKind = units.filter((candidate) => candidate.side === "human" && candidate.kind === unit.kind && candidate.hp > 0);
+          const represented = sameKind.reduce((total, candidate) => total + (candidate.squadSize || 1), 0);
+          const frontMate = sameKind.filter((candidate) => candidate.id !== unit.id && candidate.x > unit.x + 0.2).sort((a, b) => Math.hypot(a.x - unit.x, (a.depth - unit.depth) * 38) - Math.hypot(b.x - unit.x, (b.depth - unit.depth) * 38))[0];
+          if (represented >= 4 && frontMate) {
+            const distance = Math.hypot(frontMate.x - unit.x, (frontMate.depth - unit.depth) * 38);
+            if (distance > 3.5) {
+              unit.moving = true; const step = Math.min(unit.speed * 1.45 * dt, distance - 3.35);
+              unit.x += (frontMate.x - unit.x) / distance * step; unit.depth += ((frontMate.depth - unit.depth) * 38) / distance * step / 38;
+              continue;
+            }
           }
+        }
+        if (unit.side === "human" && unit.x >= siegeLine && !aliensAlive) {
+          unit.targetId = undefined;
+          unit.x = siegeLine;
+          if (unit.cooldown <= 0) { nestDamage += unit.attack; fireAt(unit, 91, 66); unit.cooldown = unit.kind === "marine" ? 0.55 : 0.9; }
+          if (waveRef.current < (isBoss(state) ? 1 : 2)) nestDamage = 0;
           continue;
         }
         if (unit.side === "alien" && unit.x <= 7) {
-          baseDamage += unit.attack * 2.5;
-          unit.hp = 0;
-          breached.add(unit.id);
-          continue;
+          baseDamage += unit.attack * 2.5; unit.hp = 0; breached.add(unit.id); continue;
         }
-
-        let target: BattleUnit | undefined = unit.targetId === undefined ? undefined : units.find((candidate) => candidate.id === unit.targetId && candidate.hp > 0);
+        let target = unit.targetId === undefined ? undefined : units.find((candidate) => candidate.id === unit.targetId && candidate.hp > 0);
         let distance = Infinity;
         if (target) distance = Math.hypot(target.x - unit.x, (target.depth - unit.depth) * 38);
-        if (!target) {
-          for (const candidate of units) {
-            if (candidate.side === unit.side || candidate.hp <= 0) continue;
-            const d = Math.hypot(candidate.x - unit.x, (candidate.depth - unit.depth) * 38);
-            if (d < distance) { distance = d; target = candidate; }
-          }
+        if (!target) for (const candidate of units) {
+          if (candidate.side === unit.side || candidate.hp <= 0) continue;
+          const d = Math.hypot(candidate.x - unit.x, (candidate.depth - unit.depth) * 38);
+          if (d < distance) { distance = d; target = candidate; }
         }
         unit.targetId = target?.id;
         if (target && distance <= unit.range) {
           if (unit.cooldown <= 0) {
-            target.hp -= unit.attack;
-            target.hitFx = 3;
-            attackSounds.add(unit.kind);
-            fireAt(unit, target.x, visualY(target.kind, target.depth));
-            if (unit.kind === "tank" || unit.kind === "fighter") {
-              const splash = unit.kind === "tank" ? 0.38 : 0.28;
-              for (const nearby of units) {
-                if (nearby.side === unit.side || nearby.id === target.id || nearby.hp <= 0) continue;
-                if (Math.hypot(nearby.x - target.x, (nearby.depth - target.depth) * 38) < 3.5) {
-                  nearby.hp -= unit.attack * splash;
-                  nearby.hitFx = 2;
-                }
-              }
+            target.hp -= unit.attack; target.hitFx = 3; fireAt(unit, target.x, visualY(target.kind, target.depth));
+            if (unit.kind === "tank" || unit.kind === "fighter") for (const nearby of units) {
+              if (nearby.side === unit.side || nearby.id === target.id || nearby.hp <= 0) continue;
+              if (Math.hypot(nearby.x - target.x, (nearby.depth - target.depth) * 38) < 3.5) { nearby.hp -= unit.attack * (unit.kind === "tank" ? 0.38 : 0.28); nearby.hitFx = 2; }
             }
             unit.cooldown = unit.kind === "marine" ? 0.55 : unit.kind === "spitter" ? 1.15 : 0.9;
           }
         } else {
           unit.moving = true;
           if (target && distance < Infinity) {
-            const dx = target.x - unit.x;
-            const dy = (target.depth - unit.depth) * 38;
+            const dx = target.x - unit.x, dy = (target.depth - unit.depth) * 38;
             const step = Math.min(unit.speed * dt, Math.max(0, distance - unit.range * 0.82));
-            unit.x += dx / distance * step;
-            unit.depth += dy / distance * step / 38;
-          } else {
-            unit.x += (unit.side === "human" ? 1 : -1) * unit.speed * dt;
-          }
-          unit.x = Math.max(6, Math.min(93, unit.x));
-          unit.depth = Math.max(0.08, Math.min(0.92, unit.depth));
+            unit.x += dx / distance * step; unit.depth += dy / distance * step / 38;
+          } else unit.x += (unit.side === "human" ? 1 : -1) * unit.speed * dt;
+          unit.x = Math.max(6, Math.min(unit.side === "human" ? siegeLine : 93, unit.x)); unit.depth = Math.max(0.08, Math.min(0.92, unit.depth));
         }
       }
 
-      // Keep nearby allies from occupying the exact same visual lane.
-      for (let i = 0; i < units.length; i++) for (let j = i + 1; j < units.length; j++) {
-        const a = units[i]; const b = units[j];
-        if (a.side !== b.side || Math.abs(a.x - b.x) > 3 || Math.abs(a.depth - b.depth) > 0.075) continue;
-        const nudge = a.depth <= b.depth ? -0.012 : 0.012;
-        a.depth = Math.max(0.08, Math.min(0.92, a.depth + nudge));
-        b.depth = Math.max(0.08, Math.min(0.92, b.depth - nudge));
-      }
+      for (const unit of units) if (unit.side === "human" && unit.hp <= 0 && !mergedAway.has(unit.id)) deadHumans[unit.kind as UnitKey] = (deadHumans[unit.kind as UnitKey] || 0) + (unit.squadSize || 1);
+      let survivors = units.filter((unit) => unit.hp > 0);
+      const aliensRemain = survivors.some((unit) => unit.side === "alien");
+      if (!aliensRemain && waveActiveRef.current) { waveActiveRef.current = false; setWaveCountdown(18); }
+      attackSounds.forEach((sound) => playSfx(sound));
+      if (baseDamage > 0) playSfx("baseDamage");
+      setAttackEffects((current) => [...current.map((effect) => ({ ...effect, life: effect.life - 1 })).filter((effect) => effect.life > 1), ...effects]);
 
-      setAttackEffects((current) => [...current.map((effect) => ({ ...effect, life: effect.life - 1 })).filter((effect) => effect.life > 1), ...newEffects]);
-
-      const soundNow = performance.now();
-      const soundGap: Record<HumanUnit | AlienUnit, number> = { marine: 170, tank: 520, fighter: 420, crawler: 420, spitter: 620, brute: 800 };
-      for (const kind of attackSounds) {
-        if (soundNow - (combatSfxLastRef.current[kind] || 0) < soundGap[kind]) continue;
-        combatSfxLastRef.current[kind] = soundNow;
-        playSfx(kind);
-      }
-
-      const killed = units.filter((u) => u.side === "alien" && u.hp <= 0 && !breached.has(u.id)).length;
-      const survivors = units.filter((u) => u.hp > 0);
-      const aliensRemaining = survivors.some((unit) => unit.side === "alien");
-      const baseWillFall = state.baseHp - baseDamage <= 0;
-      battleUnitsRef.current = survivors;
-      setBattleUnits(survivors);
-
-      if (!aliensRemaining && waveActiveRef.current && !baseWillFall) {
-        waveActiveRef.current = false;
-        setWaveCountdown(WAVE_INTERMISSION);
-        setG((s) => ({ ...s, completedWaves: Math.max(s.completedWaves, s.wave) }));
-      }
-
-      if (baseDamage > 0 || nestDamage > 0 || killed > 0) {
-        if (baseDamage > 0) {
-          playSfx("baseDamage");
-          const nextBaseHp = Math.max(0, state.baseHp - baseDamage);
-          if ([750, 500, 250].some((threshold) => state.baseHp > threshold && nextBaseHp <= threshold)) playSfx("baseCritical");
-          if (nextBaseHp <= 0 && endSfxPlayedRef.current !== "defeat") {
-            endSfxPlayedRef.current = "defeat";
+      if (baseDamage || nestDamage || Object.keys(deadHumans).length) {
+        setG((current) => {
+          const next = cloneState(current);
+          const previousBaseHp = next.baseHp;
+          next.baseHp = Math.max(0, next.baseHp - baseDamage);
+          next.nestHp = Math.max(0, next.nestHp - nestDamage);
+          if ([750, 500, 250].some((threshold) => previousBaseHp > threshold && next.baseHp <= threshold)) playSfx("baseCritical");
+          for (const kind of ["marine", "tank", "fighter"] as UnitKey[]) next.army[kind] = Math.max(0, next.army[kind] - (deadHumans[kind] || 0));
+          if (next.baseHp <= 0) {
             playSfx("defeat");
+            formationsInitializedRef.current = false;
+            const keep = next.tech.salvage ? 0.85 : 0.65;
+            for (const kind of ["marine", "tank", "fighter"] as UnitKey[]) next.army[kind] = Math.floor(next.army[kind] * keep);
+            next.baseHp = 520; next.nestHp = next.nestMaxHp; next.retreats += 1;
+            survivors = []; waveRef.current = 0; setWave(0); setWaveCountdown(8); waveActiveRef.current = false;
+          } else if (next.nestHp <= 0) {
+            clearNest(next);
+            survivors = survivors.filter((unit) => unit.side === "human").map((unit) => ({ ...unit, x: 9 + Math.random() * 3, targetId: undefined, moving: true }));
+            waveRef.current = 0; setWave(0); setWaveCountdown(8); waveActiveRef.current = false;
           }
-        }
-        if (nestDamage > 0 && state.nestHp - nestDamage <= 0 && endSfxPlayedRef.current !== "victory") {
-          endSfxPlayedRef.current = "victory";
-          playSfx("victory");
-        }
-        setG((s) => {
-          const previousHp = s.baseHp;
-          const nextHp = Math.max(0, previousHp - baseDamage);
-          const nextNest = Math.max(0, s.nestHp - nestDamage);
-          const damaged = { ...s.damaged };
-          for (const threshold of [750, 500, 250]) {
-            if (previousHp > threshold && nextHp <= threshold) {
-              const candidates = (Object.keys(damaged) as MachineKey[]).filter((key) => (s[key] as number) - damaged[key] > 0);
-              if (candidates.length) {
-                const victim = candidates[Math.floor(Math.random() * candidates.length)];
-                damaged[victim] += 1;
-              }
-            }
-          }
-          return {
-            ...s, damaged, baseHp: nextHp, nestHp: nextNest, kills: s.kills + killed,
-            defenseLost: nextHp <= 0, defenseWon: nextNest <= 0,
-          };
+          return next;
         });
-        if (state.baseHp - baseDamage <= 0 || state.nestHp - nestDamage <= 0) {
-          battleUnitsRef.current = [];
-          setBattleUnits([]);
-        }
       }
+      battleUnitsRef.current = survivors; setBattleUnits(survivors);
     }, 100);
-    return () => window.clearInterval(id);
-  }, [loaded, expeditionStarted]);
+    return () => window.clearInterval(timer);
+  }, [playSfx, started]);
 
-  const costs = {
-    drill: cost(15, g.drills), furnace: cost(25, g.furnaces), assembler: cost(18, g.assemblers),
-    copperDrill: cost(6, g.copperDrills), copperFurnace: cost(18, g.copperFurnaces),
-    circuitAssembler: cost(12, g.circuitAssemblers), lab: cost(8, g.labs), coreAssembler: cost(18, g.coreAssemblers),
-    pick: Math.ceil(30 * Math.pow(1.6, g.clickLevel - 1)),
-    miningTech: cost(12, g.miningTech, 1.7), smeltingTech: cost(14, g.smeltingTech, 1.7), assemblyTech: cost(18, g.assemblyTech, 1.7),
+  const rates = useMemo(() => ratesFor(g), [g]); const army = useMemo(() => armyStats(g), [g]); const unlock = nextUnlock(g); const boss = isBoss(g);
+  const prestigeReward = Math.max(1, Math.floor(g.nestsCleared * 1.2 + Math.sqrt(g.cores))) * (1 + g.tech.deepScan * 0.3); const canPrestige = unlocked(g, "prestige");
+  const mine = (key: "iron" | "copper") => { if (key === "copper" && !unlocked(gRef.current, "copper")) return; setG((s) => ({ ...s, [key]: s[key] + (1 + s.ascensions * 0.25) })); playSfx(key === "iron" ? "mineIron" : "mineCopper"); setToast(`Manual extraction +${fmt(1 + g.ascensions * 0.25)} ${key}.`); };
+  const machineCost = (key: MachineKey, count = 1) => { const def = machineDefinitions.find((item) => item.key === key)!; let total = 0; for (let i = 0; i < count; i++) total += Math.ceil(def.baseCost * Math.pow(def.curve, g.machines[key] + i)); return { resource: def.currency, total }; };
+  const buyMachine = (key: MachineKey, requested = 1) => {
+    const def = machineDefinitions.find((item) => item.key === key)!; if (!def.unlock(gRef.current)) return;
+    setG((current) => { const s = cloneState(current); const limit = requested === Infinity ? 250 : requested; let bought = 0; for (let i = 0; i < limit; i++) { const price = Math.ceil(def.baseCost * Math.pow(def.curve, s.machines[key])); if (s[def.currency] < price) break; s[def.currency] -= price; s.machines[key] += 1; bought++; } if (bought) setToast(`${def.name} upgraded +${bought}.`); return s; });
   };
-
-  const mine = () => {
-    if (g.defenseLost || g.defenseWon) { playSfx("reject"); return; }
-    const amount = g.clickLevel * mult.mining;
-    setG((s) => mineMode === "iron" ? { ...s, ore: s.ore + amount } : { ...s, copperOre: s.copperOre + amount });
-    setPulse((n) => n + 1);
-    setToast(`+${fmt(amount)} ${mineMode} ore`);
-    playSfx(mineMode === "iron" ? "mineIron" : "mineCopper");
+  const train = (key: UnitKey) => setG((current) => { const s = cloneState(current); if (trainOne(s, key)) { playSfx(key); setToast(`${unitDefinitions.find((unit) => unit.key === key)?.name} deployed.`); } return s; });
+  const engageBoss = () => { setG((s) => ({ ...s, bossEngaged: true })); setToast("Region boss assault authorized."); };
+  const repair = () => { if (g.steel < 12 || g.circuits < 2 || g.baseHp >= BASE_MAX_HP) return; setG((s) => ({ ...s, steel: s.steel - 12, circuits: s.circuits - 2, baseHp: Math.min(BASE_MAX_HP, s.baseHp + 220) })); };
+  const buyTech = (definition: TechDefinition) => setG((current) => current.ascensions < 1 || current.tech[definition.key] || current.data < definition.cost ? current : { ...current, data: current.data - definition.cost, tech: { ...current.tech, [definition.key]: 1 } });
+  const prestige = () => {
+    if (!canPrestige || !window.confirm(`Archive this expedition for ${fmt(prestigeReward)} permanent data and redeploy the factory?`)) return;
+    setG((current) => { const next = initialState(); next.data = current.data + prestigeReward; next.tech = { ...current.tech }; next.ascensions = current.ascensions + 1; next.lifetimeCrafted = current.lifetimeCrafted; next.lifetimeKills = current.lifetimeKills; next.lifetimeNests = current.lifetimeNests; if (current.tech.landing) { next.machines.ironDrills = 1; next.machines.furnaces = 1; next.iron = 20; } next.autoTrain = current.tech.autoCommand > 0; return next; });
+    formationsInitializedRef.current = false; battleUnitsRef.current = []; waveActiveRef.current = false; waveRef.current = 0; setBattleUnits([]); setAttackEffects([]); setWave(0); setWaveCountdown(8);
+    setView("command"); setToast("Orbital redeployment complete. Permanent protocols retained.");
   };
+  const reset = () => { if (!window.confirm("Erase all v0.2 progress, permanent technology, and expedition history?")) return; setG(initialState()); setReport(null); formationsInitializedRef.current = false; battleUnitsRef.current = []; waveActiveRef.current = false; waveRef.current = 0; setBattleUnits([]); setAttackEffects([]); setWave(0); setWaveCountdown(8); try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(LEGACY_SAVE_KEY); } catch {} };
+  const updateAudioPref = <K extends keyof AudioPreferences>(key: K, value: AudioPreferences[K]) => setAudioPrefs((current) => ({ ...current, [key]: value }));
+  const begin = () => { setStarted(true); if (audioRef.current && audioPrefs.musicEnabled) void audioRef.current.play().catch(() => {}); };
+  if (!loaded) return <main className="v02-loading"><img src="/assets/logo-mark.png" alt=""/><span>RESTORING EXPEDITION DATA</span></main>;
 
-  const spend = (resource: keyof GameState, amount: number, update: (s: GameState) => GameState, successSound: SfxName = "purchase") => {
-    const current = gRef.current;
-    if (current.defenseLost || current.defenseWon || typeof current[resource] !== "number" || (current[resource] as number) < amount) {
-      playSfx("reject");
-      return false;
-    }
-    setG((s) => update({ ...s, [resource]: (s[resource] as number) - amount }));
-    playSfx(successSound);
-    return true;
-  };
-
-  const research = (kind: "miningTech" | "smeltingTech" | "assemblyTech") => {
-    const c = costs[kind];
-    if (g[kind] >= 5) { playSfx("reject"); return; }
-    spend("science", c, (s) => ({ ...s, [kind]: s[kind] + 1 }), "research");
-  };
-
-  const spawnWave = () => {
-    const state = gRef.current;
-    if (state.defenseWon || state.defenseLost) return;
-    const wave = state.wave + 1;
-    const scale = 1 + (wave - 1) * 0.14;
-    // Keep early waves readable: 2, 3, 4, 5, 6... with a lower late-game cap.
-    const count = Math.min(MAX_ENEMIES_PER_WAVE, 2 + Math.floor(wave * 0.8));
-    const enemies: BattleUnit[] = Array.from({ length: count }).map((_, i) => {
-      const isBrute = wave >= 3 && i === count - 1 && wave % 2 === 1;
-      const isSpitter = !isBrute && wave >= 2 && i % 4 === 3;
-      const kind: AlienUnit = isBrute ? "brute" : isSpitter ? "spitter" : "crawler";
-      const hp = (isBrute ? 280 : isSpitter ? 62 : 90) * scale;
-      return {
-        id: unitId.current++, side: "alien", kind,
-        x: 90 - (i % 5) * 1.2, depth: 0.12 + ((i * 29) % 75) / 100, hp, maxHp: hp,
-        attack: (isBrute ? 30 : isSpitter ? 15 : 18) * scale, range: isSpitter ? 10 : isBrute ? 3.4 : 2.7,
-            speed: isBrute ? 2.25 : isSpitter ? 3.1 : 4.4, cooldown: i * 0.08,
-            moving: true, attackFx: 0, hitFx: 0,
-      };
-    });
-    waveActiveRef.current = true;
-    const next = [...battleUnitsRef.current.filter((unit) => unit.side === "human"), ...enemies];
-    battleUnitsRef.current = next;
-    setBattleUnits(next);
-    setG((s) => ({ ...s, wave: s.wave + 1 }));
-    if (enemies.some((enemy) => enemy.kind === "brute")) playSfx("bruteRoar");
-  };
-
-  const deployRobot = (kind: HumanUnit) => {
-    const s = gRef.current;
-    if (s.defenseWon || s.defenseLost) return;
-    const costMap = {
-      marine: { plates: 8, gears: 4, circuits: 0, cores: 0 },
-      tank: { plates: 18, gears: 0, circuits: 6, cores: 1 },
-      fighter: { plates: 0, gears: 8, circuits: 8, cores: 2 },
-    }[kind];
-    if (s.plates < costMap.plates || s.gears < costMap.gears || s.circuits < costMap.circuits || s.cores < costMap.cores) return;
-    const stats = {
-      marine: { hp: 78, attack: 13, range: 10, speed: 6.4 },
-      tank: { hp: 220, attack: 34, range: 16, speed: 2.8 },
-      fighter: { hp: 92, attack: 30, range: 18, speed: 8.5 },
-    }[kind];
-    setG((prev) => ({ ...prev, plates: prev.plates - costMap.plates, gears: prev.gears - costMap.gears, circuits: prev.circuits - costMap.circuits, cores: prev.cores - costMap.cores }));
-    const robot: BattleUnit = { id: unitId.current++, side: "human", kind, x: 9, depth: 0.18 + ((unitId.current * 37) % 68) / 100, hp: stats.hp, maxHp: stats.hp, attack: stats.attack, range: stats.range, speed: stats.speed, cooldown: 0, moving: true, attackFx: 0, hitFx: 0 };
-    const next = [...battleUnitsRef.current, robot];
-    battleUnitsRef.current = next;
-    setBattleUnits(next);
-  };
-
-  const repairMachine = (key: MachineKey) => {
-    setG((s) => {
-      if ((s.damaged?.[key] || 0) <= 0 || s.plates < 6 || s.circuits < 2) return s;
-      return { ...s, plates: s.plates - 6, circuits: s.circuits - 2, damaged: { ...s.damaged, [key]: s.damaged[key] - 1 } };
-    });
-  };
-
-  const repairBase = () => {
-    if (g.defenseLost || g.defenseWon || g.plates < 12 || g.circuits < 5 || g.baseHp >= BASE_MAX_HP) return;
-    setG((s) => ({ ...s, plates: s.plates - 12, circuits: s.circuits - 5, baseHp: Math.min(BASE_MAX_HP, s.baseHp + 150) }));
-  };
-
-  const bottleneck = useMemo(() => {
-    const candidates = [
-      { name: "IRON ORE", supply: rates.ironOre, demand: rates.ironPlate },
-      { name: "COPPER ORE", supply: rates.copperOre, demand: rates.copperPlate },
-      { name: "IRON PLATE", supply: rates.ironPlate, demand: rates.gear * 2 + rates.circuit },
-      { name: "COPPER PLATE", supply: rates.copperPlate, demand: rates.circuit },
-      { name: "GEAR", supply: rates.gear, demand: rates.core * 2 },
-      { name: "CIRCUIT", supply: rates.circuit, demand: rates.core * 2 },
-      { name: "CORE", supply: rates.core, demand: rates.science / RESEARCH_PER_CORE },
-    ].filter((x) => x.demand > 0.01 && x.supply + 0.01 < x.demand)
-      .sort((a, b) => (a.supply / a.demand) - (b.supply / b.demand));
-    return candidates[0] ?? null;
-  }, [rates]);
-
-  const missionReady = g.gears >= 100 && g.circuits >= 100 && g.cores >= 25;
-  const missionProgress = Math.min(100, ((Math.min(g.gears, 100) + Math.min(g.circuits, 100) + Math.min(g.cores, 25) * 4) / 300) * 100);
-  const activeAlienCount = battleUnits.filter((unit) => unit.side === "alien").length;
-  const defenseStatus = g.wave === 0 && g.assemblers === 0
-    ? "STANDBY — BUILD A GEAR PRESS"
-    : activeAlienCount > 0
-      ? `WAVE ${g.wave} ENGAGED · ${activeAlienCount} HOSTILES`
-      : `WAVE ${g.wave + 1} IN ${waveCountdown}s`;
-  const activate = () => missionReady && setG((s) => ({ ...s, won: true }));
-
-  const reset = () => {
-    if (!window.confirm("Reset the factory and erase this local save?")) return;
-    setG(initial); localStorage.removeItem("assembly-ascendant-save"); setToast("New landing. Deposits detected.");
-    battleUnitsRef.current = []; setBattleUnits([]); setAttackEffects([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory");
-    combatSfxLastRef.current = {}; endSfxPlayedRef.current = null; waveActiveRef.current = false;
-  };
-
-  const newExpedition = () => {
-    setG(initial); localStorage.removeItem("assembly-ascendant-save"); setToast("New landing. Deposits detected.");
-    battleUnitsRef.current = []; setBattleUnits([]); setAttackEffects([]); setWaveCountdown(FIRST_WAVE_DELAY); setView("factory"); last.current = Date.now();
-    combatSfxLastRef.current = {}; endSfxPlayedRef.current = null; waveActiveRef.current = false;
-  };
-
-  const enterExpedition = (startFresh = false) => {
-    if (startFresh && hasSave && !window.confirm("Start a new expedition and erase the current local save?")) return;
-    if (startFresh || !hasSave) {
-      newExpedition();
-      setHasSave(false);
-    }
-    setIntroReady(true);
-    setIntroLeaving(true);
-    musicRef.current?.pause();
-    last.current = Date.now();
-    window.setTimeout(() => {
-      setExpeditionStarted(true);
-      setIntroLeaving(false);
-    }, 720);
-  };
-
-  return (
-    <main className={`game-shell ${g.won ? "victory" : ""} ${!expeditionStarted ? "intro-active" : ""}`} onPointerDownCapture={(event) => playInterfaceSound(event.target)}>
-      <audio ref={musicRef} src={expeditionStarted ? "/audio/theme-02-epic-mysterious-v2.wav" : "/audio/gsf-discovery.mp3"} preload="metadata" loop />
-      {!expeditionStarted && <section className={`opening-cinematic ${introReady ? "ready" : ""} ${introLeaving ? "leaving" : ""}`} aria-label="Assembly Ascendant opening screen">
-        <div className="opening-camera" aria-hidden="true">
-          <img src="/assets/opening-orbit.png" alt="" fetchPriority="high" />
-          <div className="opening-atmosphere" />
-          <div className="opening-scanlines" />
-          <span className="descent-trace trace-one" />
-          <span className="descent-trace trace-two" />
-        </div>
-        <div className="opening-vignette" aria-hidden="true" />
-        <div className="opening-hud opening-hud-top" aria-hidden="true"><span>ORBITAL INSERTION // A2-01</span><span>LINK 98.7%</span></div>
-        <div className="opening-hud opening-hud-bottom" aria-hidden="true"><span>KEPLER FRONTIER // UNKNOWN BIOSPHERE</span><span>DESCENT VECTOR LOCKED</span></div>
-        <div className="opening-title-card">
-          <img className="opening-logo" src="/assets/logo-mark.png" alt="Assembly Ascendant A squared emblem" />
-          <small>EXPEDITIONARY WAR PROTOCOL</small>
-          <h1>ASSEMBLY<br/><em>ASCENDANT</em></h1>
-          <p>BUILD THE MACHINE. SURVIVE THE PLANET.</p>
-          <div className="opening-actions">
-            <button className="opening-primary" onClick={() => enterExpedition(false)}>
-              <span>{hasSave ? "CONTINUE EXPEDITION" : "BEGIN EXPEDITION"}</span>
-              <small>{hasSave ? `RESUME WAVE ${g.wave || 1} // BASE ${Math.ceil(g.baseHp / 10)}%` : "INITIALIZE PLANETFALL SEQUENCE"}</small>
-            </button>
-            <div>
-              {hasSave && <button onClick={() => enterExpedition(true)}>NEW EXPEDITION</button>}
-              <button onClick={() => setSettingsOpen(true)}>AUDIO SETTINGS</button>
-            </div>
-          </div>
-        </div>
-        <div className="opening-threat" aria-hidden="true"><i/><span>HOSTILE SIGNAL<br/><b>DETECTED</b></span></div>
-      </section>}
-      {settingsOpen && <div className="settings-backdrop" onPointerDown={() => setSettingsOpen(false)}>
-        <section className="audio-settings" role="dialog" aria-modal="true" aria-labelledby="audio-settings-title" onPointerDown={(event) => event.stopPropagation()}>
-          <div className="settings-titlebar">
-            <div><small>SYSTEM / AUDIO</small><strong id="audio-settings-title">AUDIO SETTINGS</strong></div>
-            <button className="settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button>
-          </div>
-          <div className="audio-control">
-            <div className="audio-control-heading"><span><b>MUSIC</b><small>{expeditionStarted ? "EPIC MYSTERIOUS THEME" : "GSF DISCOVERY // VITALEZZZ // CC0"}</small></span><button className={`audio-switch ${audioPrefs.musicEnabled ? "on" : ""}`} aria-pressed={audioPrefs.musicEnabled} onClick={() => updateAudioPref("musicEnabled", !audioPrefs.musicEnabled)}>{audioPrefs.musicEnabled ? "ON" : "OFF"}</button></div>
-            <label><span>VOLUME</span><input type="range" min="0" max="1" step="0.01" value={audioPrefs.musicVolume} disabled={!audioPrefs.musicEnabled} onChange={(event) => updateAudioPref("musicVolume", Number(event.target.value))}/><output>{Math.round(audioPrefs.musicVolume * 100)}%</output></label>
-          </div>
-          <div className="audio-control">
-            <div className="audio-control-heading"><span><b>SOUND EFFECTS</b><small>INTERFACE / COMBAT / FACTORY</small></span><button className={`audio-switch ${audioPrefs.sfxEnabled ? "on" : ""}`} aria-pressed={audioPrefs.sfxEnabled} onClick={() => updateAudioPref("sfxEnabled", !audioPrefs.sfxEnabled)}>{audioPrefs.sfxEnabled ? "ON" : "OFF"}</button></div>
-            <label><span>VOLUME</span><input type="range" min="0" max="1" step="0.01" value={audioPrefs.sfxVolume} disabled={!audioPrefs.sfxEnabled} onChange={(event) => updateAudioPref("sfxVolume", Number(event.target.value))}/><output>{Math.round(audioPrefs.sfxVolume * 100)}%</output></label>
-          </div>
-          <p className="audio-note">Audio begins after your first interaction. Settings are saved on this device.</p>
-        </section>
-      </div>}
-      {(g.defenseLost || g.defenseWon) && <div className={`expedition-end ${g.defenseWon ? "won" : "lost"}`}>
-        <div className="end-scan"/><small>EXPEDITION A2-{String(g.wave).padStart(2, "0")} // FINAL REPORT</small>
-        <strong>{g.defenseWon ? "PLANET SECURED" : "FACTORY LOST"}</strong>
-        <p>{g.defenseWon ? "The alien hive has collapsed. Your automated war machine owns this world." : "The base core was breached. Production, combat and research are permanently offline."}</p>
-        <div className="end-stats"><span><b>{g.completedWaves}</b>WAVES SURVIVED</span><span><b>{g.kills}</b>KILLS</span><span><b>{fmt(g.nestHp)}</b>NEST HP</span></div>
-        <button onClick={newExpedition}>NEW EXPEDITION</button>
-      </div>}
-      {g.won && <div className="victory-banner"><span>ORBITAL CORE ONLINE</span><strong>PLANETARY FACTORY STATUS: AUTONOMOUS</strong><button onClick={() => setG((s) => ({ ...s, won: false }))}>RETURN TO FACTORY</button></div>}
-      <header className="topbar">
-        <div className="brand"><span className="brand-logo" aria-hidden="true"><img src="/assets/logo-mark.png" alt="" /></span><div><strong>ASSEMBLY ASCENDANT</strong><small>EXPEDITIONARY WAR PROTOCOL // v0.1</small></div></div>
-        <div className="objective"><span>DEFENSE NETWORK</span><strong>{g.defenseWon ? "PLANET SECURED" : g.defenseLost ? "GAME OVER — FACTORY LOST" : defenseStatus}</strong></div>
-        <div className="top-actions">
-          <button className="settings-button" onClick={() => setSettingsOpen(true)} aria-label="Open audio settings">⚙ SETTINGS</button>
-          <button className="reset" onClick={reset}>↻ RESET</button>
-        </div>
-      </header>
-
-      <nav className="mode-tabs" aria-label="Game sections">
-        <button className={view === "factory" ? "active" : ""} onClick={() => setView("factory")}><span>01</span> FACTORY <small>{missionReady ? "CORE READY" : "PRODUCTION"}</small></button>
-        <button className={`${view === "defense" ? "active" : ""} ${g.defenseLost ? "danger" : ""}`} onClick={() => setView("defense")}><span>02</span> DEFENSE <small>{g.defenseWon ? "SECURED" : g.defenseLost ? "BREACHED" : g.wave === 0 && g.assemblers === 0 ? "STANDBY" : activeAlienCount > 0 ? `W${g.wave} · ${activeAlienCount} HOSTILES` : `W${g.wave + 1} · ${waveCountdown}s`}</small></button>
-        <div className="base-mini"><span>BASE</span><div><i style={{ width: `${Math.max(0, g.baseHp / BASE_MAX_HP * 100)}%` }}/></div><b>{fmt(g.baseHp)} HP</b></div>
-      </nav>
-
-      <section className="resource-strip" aria-label="Factory resources">
-        <Resource icon={ASSET.ironOre} name="IRON ORE" value={g.ore} flow={flows.ironOre} color="orange" />
-        <Resource icon={ASSET.ironPlate} name="IRON PLATE" value={g.plates} flow={flows.ironPlate} color="steel" />
-        <Resource icon={ASSET.copperOre} name="COPPER ORE" value={g.copperOre} flow={flows.copperOre} color="copper" />
-        <Resource icon={ASSET.copperPlate} name="COPPER PLATE" value={g.copperPlates} flow={flows.copperPlate} color="copper" />
-        <Resource icon={ASSET.gear} name="GEAR" value={g.gears} flow={flows.gear} color="gold" />
-        <Resource icon={ASSET.circuit} name="CIRCUIT" value={g.circuits} flow={flows.circuit} color="green" />
-        <Resource icon={ASSET.core} name="CORE" value={g.cores} flow={flows.core} color="cyan" />
-        <Resource icon={ASSET.research} name="RESEARCH" value={g.science} flow={flows.science} color="violet" />
-      </section>
-
-      {view === "factory" ? <>
-      <div className="workspace v2">
-        <section className="mine-panel">
-          <div className="panel-heading"><span>DEPOSIT CONTROL</span><small>MANUAL</small></div>
-          <div className="deposit-switch">
-            <button className={mineMode === "iron" ? "active" : ""} onClick={() => setMineMode("iron")}>◆ IRON</button>
-            <button className={mineMode === "copper" ? "active copper" : ""} onClick={() => setMineMode("copper")}>◇ COPPER</button>
-          </div>
-          <div className={`mine-stage compact ${mineMode}`}>
-            <div className="grid-lines" />
-            <button className="asteroid" onClick={mine} aria-label={`Mine ${mineMode} ore`}>
-              <img src={mineMode === "iron" ? ASSET.ironOre : ASSET.copperOre} alt="" draggable={false}/>
-              <span key={pulse} className="spark">+{fmt(g.clickLevel * mult.mining)}</span>
-            </button>
-            <div className="mine-readout"><span>{mineMode.toUpperCase()} EXTRACTION</span><strong>{fmt(g.clickLevel * mult.mining)} ORE / CLICK</strong><small>{toast}</small></div>
-          </div>
-          <button className={`upgrade-card ${g.plates < costs.pick ? "unavailable" : ""}`} aria-disabled={g.plates < costs.pick} onClick={() => spend("plates", costs.pick, (s) => ({ ...s, clickLevel: s.clickLevel + 1 }))}>
-            <span className="machine-icon">⛏</span><span><b>Reinforced Extractor</b><small>Manual extraction +1 base yield</small></span><Price icon="▰" value={costs.pick}/>
-          </button>
-
-          <div className="bottleneck-card">
-            <div className="signal-row"><span className={bottleneck ? "warn-light" : "ok-light"}/><b>BOTTLENECK MONITOR</b></div>
-            {bottleneck ? <><strong>{bottleneck.name} STARVED</strong><p>Capacity {fmt(bottleneck.supply)}/s · Demand {fmt(bottleneck.demand)}/s</p><small>Add upstream capacity to restore full throughput.</small></> : <><strong className="nominal">LINE BALANCED</strong><p>No capacity bottleneck detected.</p><small>Downstream machines will report here as the factory grows.</small></>}
-          </div>
-        </section>
-
-        <section className="factory-panel">
-          <div className="panel-heading"><span>PRODUCTION NETWORK</span><small>LIVE / AUTO</small></div>
-          <div className="factory-visual">
-            <div className="pipeline-label">RAW PROCESSING // AUTO-LINES</div>
-            <FactoryLane
-              label="IRON LINE" color="iron"
-              first={<MachineBank icon="⛏" name="DRILL" count={g.drills} damaged={g.damaged.drills} />}
-              firstBelt={<FlowBelt icon={ASSET.ironOre} rate={flows.ironOre.consumed} color="iron" />}
-              second={<MachineBank icon="♨" name="FURNACE" count={g.furnaces} damaged={g.damaged.furnaces} />}
-              outputBelt={<FlowBelt icon={ASSET.ironPlate} rate={flows.ironPlate.produced} color="steel" />}
-            />
-            <FactoryLane
-              label="COPPER LINE" color="copper"
-              first={<MachineBank icon="⛏" name="DRILL" count={g.copperDrills} damaged={g.damaged.copperDrills} color="copper" />}
-              firstBelt={<FlowBelt icon={ASSET.copperOre} rate={flows.copperOre.consumed} color="copper" />}
-              second={<MachineBank icon="♨" name="FURNACE" count={g.copperFurnaces} damaged={g.damaged.copperFurnaces} color="copper" />}
-              outputBelt={<FlowBelt icon={ASSET.copperPlate} rate={flows.copperPlate.produced} color="copper" />}
-            />
-
-            <div className="pipeline-label assembly-label">COMPONENT ASSEMBLY</div>
-            <div className="component-lines">
-              <ComponentLine name="GEAR PRESS" recipe="2 IRON PLATE → GEAR" icon={ASSET.gear} count={g.assemblers} damaged={g.damaged.assemblers} rate={flows.gear.produced} outputIcon={ASSET.gear} color="gold" />
-              <ComponentLine name="CIRCUIT PRINTER" recipe="IRON + COPPER → CIRCUIT" icon={ASSET.circuit} count={g.circuitAssemblers} damaged={g.damaged.circuitAssemblers} rate={flows.circuit.produced} outputIcon={ASSET.circuit} color="green" />
-            </div>
-
-            <div className="pipeline-label assembly-label">ADVANCED AUTOMATION</div>
-            <div className="advanced-line">
-              <MachineBank icon={ASSET.core} name="CORE FAB" count={g.coreAssemblers} damaged={g.damaged.coreAssemblers} color="cyan" large />
-              <FlowBelt icon={ASSET.core} rate={flows.core.consumed} color="cyan" long />
-              <div className="telemetry-bank">
-                <MachineBank icon={ASSET.research} name="LAB" count={g.labs} damaged={g.damaged.labs} color="violet" compact />
-                <div className="telemetry-readout"><span>RESEARCH TELEMETRY · CORE −{fmt(flows.core.consumed)}/s</span><strong>+{fmt(flows.science.produced)}/s</strong></div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <aside className="shop-panel">
-          <div className="panel-heading"><span>FACTORY MARKET</span><small>BUILD</small></div>
-          <div className="shop-group">EXTRACTION</div>
-          <ShopRow name="Iron Drill" detail="+0.8 iron ore/s" icon={ASSET.ironOre} count={g.drills} priceIcon={ASSET.ironOre} price={costs.drill} canBuy={g.ore >= costs.drill} onBuy={() => spend("ore", costs.drill, (s) => ({ ...s, drills: s.drills + 1 }))}/>
-          <ShopRow name="Copper Drill" detail="+0.65 copper ore/s" icon={ASSET.copperOre} count={g.copperDrills} priceIcon={ASSET.gear} price={costs.copperDrill} canBuy={g.gears >= costs.copperDrill} onBuy={() => spend("gears", costs.copperDrill, (s) => ({ ...s, copperDrills: s.copperDrills + 1 }))}/>
-          <div className="shop-group">PROCESSING</div>
-          <ShopRow name="Iron Furnace" detail="+0.6 iron plate/s" icon={ASSET.ironPlate} count={g.furnaces} priceIcon={ASSET.ironOre} price={costs.furnace} canBuy={g.ore >= costs.furnace} onBuy={() => spend("ore", costs.furnace, (s) => ({ ...s, furnaces: s.furnaces + 1 }))}/>
-          <ShopRow name="Copper Furnace" detail="+0.5 copper plate/s" icon={ASSET.copperPlate} count={g.copperFurnaces} priceIcon={ASSET.ironPlate} price={costs.copperFurnace} canBuy={g.plates >= costs.copperFurnace} onBuy={() => spend("plates", costs.copperFurnace, (s) => ({ ...s, copperFurnaces: s.copperFurnaces + 1 }))}/>
-          <div className="shop-group">ASSEMBLY</div>
-          <ShopRow name="Gear Press" detail="2 iron plate → gear" icon={ASSET.gear} count={g.assemblers} priceIcon={ASSET.ironPlate} price={costs.assembler} canBuy={g.plates >= costs.assembler} onBuy={() => spend("plates", costs.assembler, (s) => ({ ...s, assemblers: s.assemblers + 1 }))}/>
-          <ShopRow name="Circuit Printer" detail="iron + copper → circuit · +0.32/s" icon={ASSET.circuit} count={g.circuitAssemblers} priceIcon={ASSET.gear} price={costs.circuitAssembler} canBuy={g.gears >= costs.circuitAssembler} onBuy={() => spend("gears", costs.circuitAssembler, (s) => ({ ...s, circuitAssemblers: s.circuitAssemblers + 1 }))}/>
-          <ShopRow name="Research Lab" detail="1 core → 4 research · cap +0.1/s" icon={ASSET.research} count={g.labs} priceIcon={ASSET.circuit} price={costs.lab} canBuy={g.circuits >= costs.lab} onBuy={() => spend("circuits", costs.lab, (s) => ({ ...s, labs: s.labs + 1 }))}/>
-          <ShopRow name="Core Fabricator" detail="2 gear + 2 circuit → core · +0.12/s" icon={ASSET.core} count={g.coreAssemblers} priceIcon={ASSET.circuit} price={costs.coreAssembler} canBuy={g.circuits >= costs.coreAssembler} onBuy={() => spend("circuits", costs.coreAssembler, (s) => ({ ...s, coreAssemblers: s.coreAssemblers + 1 }))}/>
-        </aside>
-      </div>
-
-      <section className="lower-deck">
-        <div className="research-zone">
-          <div className="panel-heading"><span>RESEARCH MATRIX</span><small>CHOOSE YOUR SPECIALIZATION</small></div>
-          <div className="research-grid">
-            <TechCard icon={ASSET.ironOre} name="Mining Optimizer" level={g.miningTech} detail="Mining +25% / level" cost={costs.miningTech} science={g.science} onClick={() => research("miningTech")}/>
-            <TechCard icon={ASSET.ironPlate} name="Thermal Tuning" level={g.smeltingTech} detail="Smelting +25% / level" cost={costs.smeltingTech} science={g.science} onClick={() => research("smeltingTech")}/>
-            <TechCard icon={ASSET.gear} name="Assembly Logic" level={g.assemblyTech} detail="Assembly +25% / level" cost={costs.assemblyTech} science={g.science} onClick={() => research("assemblyTech")}/>
-          </div>
-        </div>
-        <div className="mission-zone">
-          <div className="panel-heading"><span>ORBITAL CORE PROJECT</span><small>{fmt(missionProgress)}% COMPLETE</small></div>
-          <div className="mission-reqs">
-            <Requirement icon={ASSET.gear} name="GEARS" have={g.gears} need={100}/>
-            <Requirement icon={ASSET.circuit} name="CIRCUITS" have={g.circuits} need={100}/>
-            <Requirement icon={ASSET.core} name="CORES" have={g.cores} need={25}/>
-          </div>
-          <div className="mission-progress"><i style={{ width: `${missionProgress}%` }}/></div>
-          <button className="activate" disabled={!missionReady} onClick={activate}>{missionReady ? "ACTIVATE ORBITAL CORE" : "AWAITING COMPONENTS"}</button>
-        </div>
-      </section>
-      </> : <DefenseView g={g} units={battleUnits} attackEffects={attackEffects} countdown={waveCountdown} deployRobot={deployRobot} repairBase={repairBase} repairMachine={repairMachine} />}
-      <footer><span>LOCAL SAVE // LEGACY COMPATIBLE</span><span>{view === "factory" ? "Factory feeds the war. Keep an eye on the next wave." : "Build the army. Break the hive. Do not lose the core."}</span><span>PROTOCOL A2.01</span></footer>
-    </main>
-  );
+  return <main className={`game-shell v02-shell ${!started ? "intro-active" : ""}`}>
+    <audio ref={audioRef} src={started ? "/audio/theme-02-epic-mysterious-v2.wav" : "/audio/gsf-discovery.mp3"} preload="metadata" loop/>
+    {!started && <section className="opening-cinematic ready" aria-label="Assembly Ascendant v0.2 opening">
+      <div className="opening-camera" aria-hidden="true"><img src="/assets/opening-orbit.png" alt=""/><div className="opening-atmosphere"/><div className="opening-scanlines"/><span className="descent-trace trace-one"/><span className="descent-trace trace-two"/></div><div className="opening-vignette"/>
+      <div className="opening-hud opening-hud-top"><span>ORBITAL INSERTION // A2-02</span><span>LINK 99.2%</span></div><div className="opening-hud opening-hud-bottom"><span>AUTONOMOUS FRONTIER PROTOCOL</span><span>FACTORY MEMORY ONLINE</span></div>
+      <div className="opening-title-card"><img className="opening-logo" src="/assets/logo-mark.png" alt="Assembly Ascendant emblem"/><small>EXPEDITIONARY IDLE PROTOCOL // v0.2</small><h1>ASSEMBLY<br/><em>ASCENDANT</em></h1><p>BUILD THE FACTORY. ADVANCE THE FRONT.</p><div className="opening-actions"><button className="opening-primary" onClick={begin}><span>{g.lifetimeNests ? "CONTINUE EXPEDITION" : "BEGIN PLANETFALL"}</span><small>REGION {g.region} · NEST {g.nest} · {g.lifetimeNests} CLEARED</small></button><div><button onClick={() => setSettingsOpen(true)}>AUDIO SETTINGS</button>{g.lifetimeNests > 0 && <button onClick={reset}>NEW PROFILE</button>}</div></div></div>
+    </section>}
+    {settingsOpen && <div className="settings-backdrop" onPointerDown={() => setSettingsOpen(false)}><section className="audio-settings" role="dialog" aria-modal="true" aria-labelledby="audio-settings-title" onPointerDown={(event) => event.stopPropagation()}>
+      <div className="settings-titlebar"><div><small>EXPEDITION AUDIO CONTROL</small><strong id="audio-settings-title">AUDIO SETTINGS</strong></div><button className="settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close audio settings">×</button></div>
+      <div className="audio-control"><div className="audio-control-heading"><span><b>BACKGROUND MUSIC</b><small>FACTORY AND CAMPAIGN SCORE</small></span><button className={`audio-switch ${audioPrefs.musicEnabled ? "on" : ""}`} onClick={() => updateAudioPref("musicEnabled", !audioPrefs.musicEnabled)}>{audioPrefs.musicEnabled ? "ON" : "OFF"}</button></div><label><span>VOLUME</span><input type="range" min="0" max="1" step="0.05" value={audioPrefs.musicVolume} disabled={!audioPrefs.musicEnabled} onChange={(event) => updateAudioPref("musicVolume", Number(event.target.value))}/><output>{Math.round(audioPrefs.musicVolume * 100)}%</output></label></div>
+      <div className="audio-control"><div className="audio-control-heading"><span><b>SOUND EFFECTS</b><small>WEAPONS, ALERTS, DEPLOYMENT</small></span><button className={`audio-switch ${audioPrefs.sfxEnabled ? "on" : ""}`} onClick={() => updateAudioPref("sfxEnabled", !audioPrefs.sfxEnabled)}>{audioPrefs.sfxEnabled ? "ON" : "OFF"}</button></div><label><span>VOLUME</span><input type="range" min="0" max="1" step="0.05" value={audioPrefs.sfxVolume} disabled={!audioPrefs.sfxEnabled} onChange={(event) => updateAudioPref("sfxVolume", Number(event.target.value))}/><output>{Math.round(audioPrefs.sfxVolume * 100)}%</output></label></div>
+      <p className="audio-note">Music and sound effects are saved separately on this device. Browser audio begins after your first interaction.</p>
+    </section></div>}
+    {report && started && <div className="v02-report-backdrop"><section className="v02-report" role="dialog" aria-modal="true" aria-labelledby="offline-report-title"><small>REMOTE TELEMETRY // RETURN REPORT</small><h2 id="offline-report-title">YOUR FACTORY KEPT WORKING</h2><p>Away for {formatDuration(report.seconds)}. Production and expedition results have been restored.</p><div className="v02-report-grid"><span><b>+{fmt(report.steel)}</b>STEEL</span><span><b>+{fmt(report.circuits)}</b>CIRCUITS</span><span><b>+{fmt(report.cores)}</b>CORES</span><span><b>{report.nests}</b>NESTS CLEARED</span></div><div className="v02-report-status">{report.status}</div><button onClick={() => setReport(null)}>COLLECT &amp; CONTINUE</button></section></div>}
+    <header className="topbar v02-topbar"><div className="brand"><span className="brand-logo"><img src="/assets/logo-mark.png" alt=""/></span><div><strong>ASSEMBLY ASCENDANT</strong><small>AUTONOMOUS FRONTIER // v0.2</small></div></div><div className="objective"><span>{boss ? "REGION BOSS" : "ACTIVE EXPEDITION"}</span><strong>REGION {g.region} · {boss ? "HIVE CORE" : `NEST ${g.nest}/${NESTS_PER_REGION}`}</strong></div><div className="top-actions"><button className="settings-button" onClick={() => setSettingsOpen(true)}>⚙ SETTINGS</button><button className="reset" onClick={reset}>RESET</button></div></header>
+    <nav className="mode-tabs v02-tabs" aria-label="Game sections"><button className={view === "factory" ? "active" : ""} onClick={() => setView("factory")}><span>01</span> FACTORY <small>PRODUCTION</small></button><button className={view === "frontline" ? "active" : ""} onClick={() => setView("frontline")}><span>02</span> FRONTLINE <small>{frontStatus(g)}</small></button><button className={view === "command" ? "active" : ""} onClick={() => setView("command")}><span>03</span> COMMAND <small>{g.ascensions ? `${g.ascensions} REDEPLOY` : "LOCKED TREE"}</small></button><div className="base-mini"><span>BASE</span><div><i style={{ width: `${g.baseHp / BASE_MAX_HP * 100}%` }}/></div><b>{fmt(g.baseHp)} HP</b></div></nav>
+    <section className="v02-resource-strip" aria-label="Factory resources"><ResourceCard icon={ASSET.iron} name="IRON" value={g.iron} rate={rates.iron - rates.steel}/><ResourceCard icon={ASSET.steel} name="STEEL" value={g.steel} rate={rates.steel}/>{unlocked(g, "copper") && <ResourceCard icon={ASSET.copper} name="COPPER" value={g.copper} rate={rates.copper - rates.circuits}/>} {unlocked(g, "circuits") && <ResourceCard icon={ASSET.circuits} name="CIRCUITS" value={g.circuits} rate={rates.circuits}/>} {unlocked(g, "cores") && <ResourceCard icon={ASSET.cores} name="CORES" value={g.cores} rate={rates.cores}/>}<ResourceCard icon={ASSET.data} name="EXPEDITION DATA" value={g.data} rate={0} permanent/></section>
+    {view === "factory" && <FactoryView g={g} rates={rates} toast={toast} unlock={unlock} machineCost={machineCost} buyMachine={buyMachine} mine={mine}/>}
+    {view === "frontline" && <FrontlineView g={g} army={army} units={battleUnits} attackEffects={attackEffects} wave={wave} countdown={waveCountdown} train={train} engageBoss={engageBoss} repair={repair} setAutoTrain={(value) => setG((s) => ({ ...s, autoTrain: value }))}/>}
+    {view === "command" && <CommandView g={g} prestigeReward={prestigeReward} canPrestige={canPrestige} prestige={prestige} buyTech={buyTech}/>}
+    <footer className="v02-footer"><span>LOCAL SAVE // 24H OFFLINE MEMORY</span><span>{toast}</span><span>PROTOCOL A2.02</span></footer>
+  </main>;
 }
 
-function DefenseView({ g, units, attackEffects, countdown, deployRobot, repairBase, repairMachine }: {
-  g: GameState; units: BattleUnit[]; attackEffects: AttackEffect[]; countdown: number;
-  deployRobot: (kind: HumanUnit) => void;
-  repairBase: () => void; repairMachine: (key: MachineKey) => void;
-}) {
-  const damagedTotal = Object.values(g.damaged || blankDamage).reduce((a, b) => a + b, 0);
-  const machineNames: Record<MachineKey, string> = {
-    drills: "Iron Drill", furnaces: "Iron Furnace", assemblers: "Gear Press", labs: "Research Lab",
-    copperDrills: "Copper Drill", copperFurnaces: "Copper Furnace", circuitAssemblers: "Circuit Printer", coreAssemblers: "Core Fabricator",
-  };
-  const robotCount = units.filter((u) => u.side === "human").length;
-  const alienCount = units.filter((u) => u.side === "alien").length;
-  const locked = g.defenseLost || g.defenseWon;
-  const canMarine = !locked && g.plates >= 8 && g.gears >= 4;
-  const canTank = !locked && g.plates >= 18 && g.circuits >= 6 && g.cores >= 1;
-  const canFighter = !locked && g.gears >= 8 && g.circuits >= 8 && g.cores >= 2;
+function FactoryView({ g, rates, toast, unlock, machineCost, buyMachine, mine }: { g: GameState; rates: ReturnType<typeof ratesFor>; toast: string; unlock: { name: string; at: string }; machineCost: (key: MachineKey, count?: number) => { resource: ResourceKey; total: number }; buyMachine: (key: MachineKey, requested?: number) => void; mine: (key: "iron" | "copper") => void }) {
+  return <section className="v02-main-view v02-factory"><div className="v02-section-heading"><div><small>INDUSTRIAL NETWORK</small><h2>FACTORY CONTROL</h2></div><div className="v02-next-unlock"><span>NEXT UNLOCK</span><b>{unlock.name}</b><small>{unlock.at}</small></div></div><div className="v02-factory-layout">
+    <aside className="v02-extraction"><div className="panel-heading"><span>MANUAL OVERRIDE</span><small>OPTIONAL BOOST</small></div><button className="v02-deposit iron" onClick={() => mine("iron")}><img src={ASSET.iron} alt=""/><span><b>EXTRACT IRON</b><small>Clicking is optional once drills are online.</small></span></button>{unlocked(g, "copper") && <button className="v02-deposit copper" onClick={() => mine("copper")}><img src={ASSET.copper} alt=""/><span><b>EXTRACT COPPER</b><small>Feed the circuit printing line.</small></span></button>}<div className="v02-toast">{toast}</div><Bottleneck g={g} rates={rates}/></aside>
+    <div className="v02-lines">{machineDefinitions.map((machine) => { const open = machine.unlock(g); const price = machineCost(machine.key, 1); const canBuy = open && g[price.resource] >= price.total; return <article key={machine.key} className={`v02-line ${open ? "" : "locked"}`}><div className="v02-line-icon"><img src={machine.icon} alt=""/></div><div className="v02-line-copy"><small>{open ? "AUTOMATED PRODUCTION" : "FUTURE PROTOCOL"}</small><h3>{machine.name}</h3><p>{open ? machine.detail : unlockText(machine.key)}</p><div className="v02-level"><span>LEVEL {g.machines[machine.key]}</span><i style={{ width: `${Math.min(100, (g.machines[machine.key] % 10) * 10)}%` }}/></div></div>{open && <div className="v02-line-actions"><button disabled={!canBuy} onClick={() => buyMachine(machine.key)}>+1 <small>{fmt(price.total)} {price.resource}</small></button>{g.tech.bulk > 0 && <><button onClick={() => buyMachine(machine.key, 10)}>+10</button><button onClick={() => buyMachine(machine.key, Infinity)}>MAX</button></>}</div>}{!open && <strong className="v02-lock">LOCKED</strong>}</article>; })}</div>
+  </div></section>;
+}
 
-  return <section className={`defense-view ${g.defenseLost ? "lost" : ""} ${g.defenseWon ? "secured" : ""}`}>
-    <div className="defense-status-row">
-      <div className="war-stat base"><small>FACTORY BASE</small><strong>{fmt(g.baseHp)} / {BASE_MAX_HP}</strong><div><i style={{ width: `${g.baseHp / BASE_MAX_HP * 100}%` }}/></div></div>
-      <div className="war-stat wave"><small>{alienCount > 0 ? "ACTIVE ASSAULT" : "NEXT ASSAULT"}</small><strong>{g.defenseWon ? "SECURED" : g.defenseLost ? "OFFLINE" : g.wave === 0 && g.assemblers === 0 ? "DEFENSE STANDBY" : alienCount > 0 ? `WAVE ${g.wave} · ENGAGED` : `WAVE ${g.wave + 1} · ${countdown}s`}</strong><span>{g.wave === 0 && g.assemblers === 0 ? "BUILD A GEAR PRESS TO ARM THE PERIMETER" : alienCount > 0 ? `${alienCount} HOSTILES ON FIELD` : `${g.completedWaves} WAVES SURVIVED · REARM AND REPAIR`}</span></div>
-      <div className="war-stat kills"><small>COMBAT RECORD</small><strong>{g.kills} KILLS</strong><span>{robotCount} ROBOTS ACTIVE</span></div>
-      <div className="war-stat nest"><small>ALIEN NEST</small><strong>{g.wave < NEST_SHIELD_WAVES ? `SHIELDED · WAVE ${NEST_SHIELD_WAVES}` : `${fmt(g.nestHp)} / ${NEST_MAX_HP}`}</strong><div><i style={{ width: `${g.nestHp / NEST_MAX_HP * 100}%` }}/></div></div>
-    </div>
-
-    <div className="battlefield" aria-label="Automated defense battlefield">
+function FrontlineView({ g, army, units, attackEffects, wave, countdown, train, engageBoss, repair, setAutoTrain }: { g: GameState; army: ReturnType<typeof armyStats>; units: BattleUnit[]; attackEffects: AttackEffect[]; wave: number; countdown: number; train: (key: UnitKey) => void; engageBoss: () => void; repair: () => void; setAutoTrain: (value: boolean) => void }) {
+  const boss = isBoss(g); const waitingBoss = boss && !g.bossEngaged; const shielded = waitingBoss || wave < (boss ? 1 : 2); const progress = Math.max(0, 100 - g.nestHp / g.nestMaxHp * 100);
+  return <section className="v02-main-view v02-frontline"><div className="v02-sector-map"><div><small>PLANETARY CAMPAIGN</small><h2>REGION {g.region}</h2></div><div className="v02-sector-nodes">{Array.from({ length: NESTS_PER_REGION }).map((_, index) => { const node = index + 1; const cleared = node < g.nest; const active = node === g.nest; return <span key={node} className={`${cleared ? "cleared" : ""} ${active ? "active" : ""} ${node === NESTS_PER_REGION ? "boss" : ""}`}><i>{cleared ? "✓" : node === NESTS_PER_REGION ? "◆" : node}</i><small>{node === NESTS_PER_REGION ? "HIVE" : `N${node}`}</small></span>; })}</div><div className="v02-front-state"><small>FRONT STATUS</small><b>{frontStatus(g)}</b></div></div>
+    <div className="v02-war-stats"><Stat label="BASE INTEGRITY" value={`${fmt(g.baseHp)} / ${BASE_MAX_HP}`} detail={`${g.retreats} SAFE RETREATS`} progress={g.baseHp / BASE_MAX_HP * 100}/><Stat label="ARMY POWER" value={fmt(army.damage)} detail={`${army.total} UNITS DEPLOYED`} progress={Math.min(100, army.damage / Math.max(1, army.threat) * 100)}/><Stat label={boss ? "HIVE CORE" : "ALIEN NEST"} value={`${fmt(g.nestHp)} / ${fmt(g.nestMaxHp)}`} detail={`${fmt(progress)}% ASSAULT PROGRESS`} progress={g.nestHp / g.nestMaxHp * 100} danger/></div>
+    <div className="battlefield v02-battlefield">
       <div className="battle-sky"><i/><i/><i/><i/><i/></div>
-      <div className="base-structure"><img src="/assets/base-structure.webp" alt="" draggable={false}/><b>BASE</b></div>
-      <div className={`nest-structure ${g.wave < NEST_SHIELD_WAVES ? "shielded" : ""}`}><img src="/assets/alien-nest.webp" alt="" draggable={false}/><b>{g.wave < NEST_SHIELD_WAVES ? "SHIELDED" : "NEST"}</b></div>
+      <div className="base-structure"><img src="/assets/base-structure.webp" alt=""/><b>FACTORY</b></div>
+      <div className={`nest-structure ${shielded ? "shielded" : ""}`}><img src="/assets/alien-nest.webp" alt=""/><b>{waitingBoss ? "AWAITING ORDER" : shielded ? `SHIELDED · WAVE ${boss ? 1 : 2}` : boss ? "HIVE CORE" : "NEST"}</b></div>
       <div className="battle-ground"/>
-      <div className="frontline-marker"><span>FRONT LINE</span></div>
+      <div className="frontline-marker"><span>{waitingBoss ? "COMMAND AUTHORIZATION REQUIRED" : units.some((unit) => unit.side === "alien") ? `WAVE ${wave} · ${units.filter((unit) => unit.side === "alien").length} HOSTILES` : army.total ? `NEXT WAVE IN ${countdown}s` : "DEPLOY UNITS TO ADVANCE"}</span></div>
       <svg className="combat-fx" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        {attackEffects.map((effect) => <g key={effect.id} className={`attack-effect ${effect.side} ${effect.kind}`}>
-          <line x1={effect.fromX} y1={effect.fromY} x2={effect.toX} y2={effect.toY}/>
-          <circle className="impact-ring" cx={effect.toX} cy={effect.toY} r="1.1"/>
-          <circle className="impact-core" cx={effect.toX} cy={effect.toY} r="0.38"/>
-        </g>)}
+        {attackEffects.map((effect) => <g key={effect.id} className={`attack-effect ${effect.side} ${effect.kind}`}><line x1={effect.fromX} y1={effect.fromY} x2={effect.toX} y2={effect.toY}/><circle className="impact-ring" cx={effect.toX} cy={effect.toY} r="1.1"/><circle className="impact-core" cx={effect.toX} cy={effect.toY} r=".38"/></g>)}
       </svg>
-      {units.map((unit) => <div key={unit.id} className={`battle-unit ${unit.side} ${unit.kind} ${unit.moving ? "moving" : ""} ${unit.attackFx > 0 ? "attacking" : ""} ${unit.hitFx > 0 ? "hit" : ""}`} style={{ left: `${unit.x}%`, bottom: `${62 + unit.depth * 48}px`, zIndex: 10 + Math.round(unit.depth * 12), transform: `scale(${0.78 + unit.depth * 0.34})` }} title={`${unit.kind} ${Math.ceil(unit.hp)}/${Math.ceil(unit.maxHp)} HP`}>
-        <div className="unit-hp"><i style={{ width: `${Math.max(0, unit.hp / unit.maxHp * 100)}%` }}/></div>
-        <span className="unit-shadow"/>
-        <img src={`/units/${unit.kind}.png`} alt="" draggable={false}/>
-        <span className="weapon-flash"/>
-        <small>{unit.kind.toUpperCase()}</small>
+      {units.map((unit) => <div key={unit.id} className={`battle-unit ${unit.side} ${unit.kind} ${unit.moving ? "moving" : ""} ${unit.attackFx ? "attacking" : ""} ${unit.hitFx ? "hit" : ""}`} style={{ left: `${unit.x}%`, bottom: `${62 + unit.depth * 48}px`, zIndex: 10 + Math.round(unit.depth * 12), transform: `scale(${0.78 + unit.depth * 0.34})` }}>
+        <div className="unit-hp"><i style={{ width: `${Math.max(0, unit.hp / unit.maxHp * 100)}%` }}/></div><span className="unit-shadow"/><img src={`/units/${unit.kind}.png`} alt=""/><span className="weapon-flash"/><small>{unit.kind.toUpperCase()}</small>{unit.side === "human" && (unit.squadSize || 1) > 1 && <b className="unit-squad-count">×{unit.squadSize}</b>}
       </div>)}
+      {waitingBoss && <button className="v02-engage" onClick={engageBoss}>ENGAGE REGION BOSS<small>Manual authorization required for the first campaign.</small></button>}
     </div>
-
-    <div className="defense-console">
-      <div className="robot-bay">
-        <div className="panel-heading"><span>EXPEDITIONARY ARMORY</span><small>BUILD & DEPLOY</small></div>
-        <div className="robot-cards">
-          <RobotCard kind="MARINE" image="/units/marine.png" role="RAPID RIFLE" stats="78 HP · 13 DMG · RANGE 10" costs="8 PLATE + 4 GEAR" disabled={!canMarine} onClick={() => deployRobot("marine")}/>
-          <RobotCard kind="SIEGE TANK" image="/units/tank.png" role="ARMORED SPLASH" stats="220 HP · 34 DMG · RANGE 16" costs="18 PLATE + 6 CIRCUIT + 1 CORE" disabled={!canTank} onClick={() => deployRobot("tank")}/>
-          <RobotCard kind="STRIKE FIGHTER" image="/units/fighter.png" role="FAST AIR SUPPORT" stats="92 HP · 30 DMG · RANGE 18" costs="8 GEAR + 8 CIRCUIT + 2 CORE" disabled={!canFighter} onClick={() => deployRobot("fighter")}/>
-        </div>
-        <p className="war-note">Units advance and engage automatically. Tanks and fighters deal splash damage. Base destruction ends the expedition.</p>
-      </div>
-
-      <div className="repair-bay">
-        <div className="panel-heading"><span>BASE MAINTENANCE</span><small>{damagedTotal ? `${damagedTotal} OFFLINE` : "NOMINAL"}</small></div>
-        <button className="base-repair" disabled={locked || g.plates < 12 || g.circuits < 5 || g.baseHp >= BASE_MAX_HP} onClick={repairBase}>
-          <span><b>PATCH HULL +150 HP</b><small>12 plate + 5 circuit</small></span><strong>{fmt(g.baseHp)} HP</strong>
-        </button>
-        <div className="damage-list">
-          {(Object.keys(machineNames) as MachineKey[]).filter((key) => (g.damaged?.[key] || 0) > 0).map((key) => <button key={key} disabled={g.plates < 6 || g.circuits < 2} onClick={() => repairMachine(key)}>
-            <span><b>{machineNames[key]}</b><small>{g.damaged[key]} DAMAGED · −{g.damaged[key]} ACTIVE</small></span><em>REPAIR 6 ▰ + 2 ▣</em>
-          </button>)}
-          {!damagedTotal && <div className="no-damage"><span>✓</span><p>ALL FACTORY EQUIPMENT ONLINE<small>Breaches at 75%, 50% and 25% base HP can disable machines.</small></p></div>}
-        </div>
-      </div>
-    </div>
+    <div className="v02-armory"><div className="v02-armory-head"><div><small>EXPEDITIONARY ARMORY</small><h2>DEPLOYMENT</h2></div>{unlocked(g, "autoTrain") && <label className="v02-auto"><span><b>AUTO DEPLOY</b><small>{unlocked(g, "fighter") ? "Doctrine 2 Marine · 1 Tank · 1 Fighter" : unlocked(g, "tank") ? "Doctrine 2 Marine · 1 Tank" : "Marine reinforcement doctrine"}</small></span><input type="checkbox" checked={g.autoTrain} onChange={(event) => setAutoTrain(event.target.checked)}/></label>}</div><div className="v02-unit-grid">{unitDefinitions.map((unit) => { const open = unit.unlock(g); const affordable = canAfford(g, unit.costs); const cooldown = g.deployCooldowns[unit.key]; return <button key={unit.key} className={`v02-unit-card ${!open ? "locked" : ""} ${cooldown > 0 ? "cooling" : ""}`} disabled={!open || !affordable || cooldown > 0} onClick={() => train(unit.key)}><img src={unit.image} alt=""/><span><small>{open ? unit.role : unlockText(unit.key)}</small><b>{unit.name}</b><em>{open && cooldown > 0 ? `DEPLOYING · ${Math.ceil(cooldown)}s` : costLabel(unit.costs)}</em></span><strong>{open ? `×${g.army[unit.key]}` : "LOCKED"}</strong></button>; })}</div><div className="v02-maintenance"><span><b>FIELD REPAIR</b><small>Restore 220 base integrity. A destroyed base retreats safely instead of ending the game.</small></span><button disabled={g.steel < 12 || g.circuits < 2 || g.baseHp >= BASE_MAX_HP} onClick={repair}>REPAIR · 12 STEEL + 2 CIRCUIT</button></div></div>
   </section>;
 }
 
-function RobotCard({ kind, image, role, stats, costs, disabled, onClick }: { kind: string; image: string; role: string; stats: string; costs: string; disabled: boolean; onClick: () => void }) {
-  return <button className="robot-card" disabled={disabled} onClick={onClick}><span className="robot-icon"><img src={image} alt="" draggable={false}/></span><div><small>{role}</small><b>{kind}</b><em>{stats}</em></div><strong>DEPLOY</strong><i>{costs}</i></button>;
+function CommandView({ g, prestigeReward, canPrestige, prestige, buyTech }: { g: GameState; prestigeReward: number; canPrestige: boolean; prestige: () => void; buyTech: (definition: TechDefinition) => void }) {
+  return <section className="v02-main-view v02-command"><div className="v02-command-hero"><div><small>ORBITAL COMMAND</small><h2>REDEPLOYMENT &amp; PERMANENT RESEARCH</h2><p>Archive a successful expedition, rebuild from orbit, and keep every protocol you have learned.</p></div><div className="v02-career"><span><b>{g.ascensions}</b>REDEPLOYMENTS</span><span><b>{g.lifetimeNests}</b>NESTS</span><span><b>{fmt(g.lifetimeCrafted)}</b>CRAFTED</span></div></div>
+    <div className="v02-prestige-card"><div><small>ACTIVE EXPEDITION ARCHIVE</small><h3>{canPrestige ? "ORBITAL WINDOW READY" : "REACH THE REGION BOSS"}</h3><p>{canPrestige ? "Current machines, resources, army and territory reset. Data, technology, records and automation rules remain." : "Destroy all six targets in Region 1 to unlock your first voluntary redeployment."}</p></div><div className="v02-prestige-reward"><span>ARCHIVE REWARD</span><b>+{fmt(prestigeReward)} DATA</b><small>CURRENT BALANCE {fmt(g.data)}</small><button disabled={!canPrestige} onClick={prestige}>BEGIN ORBITAL REDEPLOYMENT</button></div></div>
+    {g.ascensions < 1 ? <div className="v02-tree-locked"><img src={ASSET.data} alt=""/><div><small>PERMANENT TECHNOLOGY</small><h3>COMPLETE YOUR FIRST REDEPLOYMENT</h3><p>The technology matrix appears after you prove the factory can defeat a region hive.</p></div></div> : <div className="v02-tech-tree">{(["industry", "military", "expedition"] as const).map((branch) => <section className={`v02-tech-branch ${branch}`} key={branch}><div className="v02-branch-title"><small>PERMANENT BRANCH</small><h3>{branch.toUpperCase()}</h3></div>{techDefinitions.filter((tech) => tech.branch === branch).map((tech) => { const owned = g.tech[tech.key] > 0; return <button key={tech.key} className={owned ? "owned" : ""} disabled={owned || g.data < tech.cost} onClick={() => buyTech(tech)}><span><b>{tech.name}</b><small>{tech.detail}</small></span><strong>{owned ? "ONLINE" : `${tech.cost} DATA`}</strong></button>; })}</section>)}</div>}
+    <div className="v02-offline-policy"><div><small>AUTONOMOUS MEMORY</small><h3>24-HOUR OFFLINE PROTOCOL</h3></div><p>The factory produces, reinforces and advances while you are away. If the army cannot overcome a threat, it waits or retreats safely. No offline game over.</p></div>
+  </section>;
 }
 
-function GameIcon({ icon }: { icon: string }) {
-  return icon.startsWith("/") ? <img className="game-icon" src={icon} alt="" draggable={false}/> : <>{icon}</>;
+function ResourceCard({ icon, name, value, rate, permanent = false }: { icon: string; name: string; value: number; rate: number; permanent?: boolean }) { return <div className={`v02-resource ${permanent ? "permanent" : ""}`}><img src={icon} alt=""/><span><small>{name}</small><b>{fmt(value)}</b></span><em>{permanent ? "PERMANENT" : `${rate >= 0 ? "+" : ""}${fmt(rate)}/s`}</em></div>; }
+function Bottleneck({ g, rates }: { g: GameState; rates: ReturnType<typeof ratesFor> }) {
+  let title = "LINE BALANCED", detail = "Production network is ready for expansion.";
+  if (!g.machines.ironDrills) { title = "NO AUTOMATION"; detail = "Build an Iron Drill to continue producing while away."; }
+  else if (!g.machines.furnaces) { title = "STEEL BOTTLENECK"; detail = "Build a furnace to convert iron into military steel."; }
+  else if (rates.steel > rates.iron + 0.01) { title = "IRON STARVED"; detail = "Furnaces can consume more iron than drills currently supply."; }
+  else if (unlocked(g, "circuits") && !g.machines.circuitFabs) { title = "CIRCUITS REQUIRED"; detail = "A Circuit Printer unlocks tanks and advanced command."; }
+  else if (unlocked(g, "cores") && !g.machines.coreFabs) { title = "CORE LINE OFFLINE"; detail = "Build a Core Fabricator for high-tier units and orbit."; }
+  return <div className="v02-bottleneck"><small>BOTTLENECK ADVISOR</small><b>{title}</b><p>{detail}</p></div>;
 }
-
-function Resource({ icon, name, value, flow, color }: { icon: string; name: string; value: number; flow: { produced: number; consumed: number }; color: string }) {
-  return <div className={`resource ${color}`}><span className="res-icon"><GameIcon icon={icon}/></span><div><small>{name}</small><strong>{fmt(value)}</strong></div><em><span className="flow-in">+{fmt(flow.produced)}</span><span className="flow-out">−{fmt(flow.consumed)}</span><i>/s</i></em></div>;
-}
-function Price({ icon, value }: { icon: string; value: number }) { return <span className="price"><i><GameIcon icon={icon}/></i>{fmt(value)}</span>; }
-function ShopRow(p: { name: string; detail: string; icon: string; count: number; priceIcon: string; price: number; canBuy: boolean; onBuy: () => void }) {
-  return <button className={`shop-row ${!p.canBuy ? "unavailable" : ""}`} aria-disabled={!p.canBuy} onClick={p.onBuy}><span className="shop-icon"><GameIcon icon={p.icon}/></span><span className="shop-copy"><b>{p.name}</b><small>{p.detail}</small></span><span className="owned">×{p.count}</span><Price icon={p.priceIcon} value={p.price}/></button>;
-}
-function MachineBank({ icon, name, count, damaged = 0, color = "iron", large = false, compact = false }: { icon: string; name: string; count: number; damaged?: number; color?: string; large?: boolean; compact?: boolean }) {
-  const active = Math.max(0, count - damaged);
-  const visible = Math.min(active, compact ? 6 : 10);
-  return <div className={`machine-bank ${color} ${large ? "large" : ""} ${compact ? "compact" : ""} ${active ? "online" : "idle"} ${damaged ? "has-damage" : ""}`}>
-    <div className="bank-label"><span>{name}</span><b>×{active}{damaged > 0 && <em> −{damaged} DMG</em>}</b></div>
-    <div className="machine-fleet" aria-label={`${active} active ${name}, ${damaged} damaged`}>
-      {count === 0 ? <span className="machine-unit ghost"><GameIcon icon={icon}/></span> : Array.from({ length: visible }).map((_, i) => <span className="machine-unit" key={i} style={{ animationDelay: `${i * -0.13}s` }}><GameIcon icon={icon}/></span>)}
-      {damaged > 0 && <span className="machine-unit damaged"><GameIcon icon={icon}/></span>}
-      {active > visible && <span className="fleet-overflow">+{active - visible}</span>}
-    </div>
-  </div>;
-}
-
-function FlowBelt({ icon, rate, color = "iron", long = false }: { icon: string; rate: number; color?: string; long?: boolean }) {
-  const moving = rate > 0.001;
-  const speed = Math.max(0.55, Math.min(3.4, 2.2 / Math.max(rate, 0.05)));
-  return <div className={`flow-belt ${color} ${moving ? "moving" : "stopped"} ${long ? "long" : ""}`}>
-    <div className="belt-rail"><i/><i/></div>
-    <div className="belt-items">
-      {Array.from({ length: long ? 7 : 5 }).map((_, i) => <span key={i} style={{ animationDuration: `${speed}s`, animationDelay: `${-(speed / (long ? 7 : 5)) * i}s` }}><GameIcon icon={icon}/></span>)}
-    </div>
-    <small>{moving ? `${fmt(rate)}/s` : "NO FLOW"}</small>
-  </div>;
-}
-
-function FactoryLane({ label, color, first, firstBelt, second, outputBelt }: { label: string; color: string; first: ReactNode; firstBelt: ReactNode; second: ReactNode; outputBelt: ReactNode }) {
-  return <div className={`factory-lane ${color}`}><div className="lane-tag">{label}</div><div className="lane-body">{first}{firstBelt}{second}{outputBelt}</div></div>;
-}
-
-function ComponentLine({ name, recipe, icon, count, damaged = 0, rate, outputIcon, color }: { name: string; recipe: string; icon: string; count: number; damaged?: number; rate: number; outputIcon: string; color: string }) {
-  return <div className={`component-line ${color}`}><div className="component-copy"><b>{name}</b><small>{recipe}</small></div><MachineBank icon={icon} name="UNITS" count={count} damaged={damaged} color={color} compact/><FlowBelt icon={outputIcon} rate={rate} color={color}/></div>;
-}
-function TechCard({ icon, name, level, detail, cost: c, science, onClick }: { icon: string; name: string; level: number; detail: string; cost: number; science: number; onClick: () => void }) {
-  const maxed = level >= 5;
-  const unavailable = maxed || science < c;
-  return <button className={`tech-card ${unavailable ? "unavailable" : ""}`} aria-disabled={unavailable} onClick={onClick}><span><GameIcon icon={icon}/></span><div><b>{name}</b><small>{detail}</small><div className="tech-pips">{Array.from({ length: 5 }).map((_, i) => <i className={i < level ? "on" : ""} key={i}/>)}</div></div><Price icon={ASSET.research} value={maxed ? 0 : c}/></button>;
-}
-function Requirement({ icon, name, have, need }: { icon: string; name: string; have: number; need: number }) {
-  const done = have >= need;
-  return <div className={`requirement ${done ? "done" : ""}`}><span><GameIcon icon={icon}/></span><div><small>{name}</small><strong>{fmt(Math.min(have, need))} / {need}</strong></div></div>;
-}
+function Stat({ label, value, detail, progress, danger = false }: { label: string; value: string; detail: string; progress: number; danger?: boolean }) { return <div className={`v02-stat ${danger ? "danger" : ""}`}><small>{label}</small><b>{value}</b><span>{detail}</span><div><i style={{ width: `${Math.max(0, Math.min(100, progress))}%` }}/></div></div>; }
+function frontStatus(s: GameState) { const stats = armyStats(s); if (isBoss(s) && !s.bossEngaged) return "AWAITING ORDER"; if (!stats.total) return "AWAITING UNITS"; if (stats.damage < stats.threat * 0.45) return "STALLED"; if (stats.armor < stats.threat) return "UNDER PRESSURE"; return "ADVANCING"; }
+function unlockText(key: MachineKey | UnitKey) { if (key === "copperDrills") return "Destroy Nest 1"; if (key === "circuitFabs") return "Destroy Nest 2"; if (key === "tank") return "Destroy Nest 3"; if (key === "coreFabs") return "Destroy Nest 4"; if (key === "fighter") return "Defeat the Region Boss"; return "Advance the expedition"; }
+function costLabel(costs: Partial<Record<ResourceKey, number>>) { return Object.entries(costs).map(([key, value]) => `${value} ${key.toUpperCase()}`).join(" + "); }
+function formatDuration(seconds: number) { const hours = Math.floor(seconds / 3600), minutes = Math.max(1, Math.floor((seconds % 3600) / 60)); return hours ? `${hours}h ${minutes}m` : `${minutes}m`; }
